@@ -30,6 +30,7 @@ function App() {
   const [modelLoaded, setModelLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [modelPath, setModelPath] = useState<string>('')
 
   const hasRequested = useRef(false)
 
@@ -112,7 +113,7 @@ function App() {
   const handleLoadModel = () => {
     setLoading(true)
     setError(null)
-    send({ action: 'load_model', path: null })
+    send({ action: 'load_model', path: modelPath || null })
   }
 
   const handleRegisterHooks = () => {
@@ -178,6 +179,41 @@ function App() {
             ❌ {error}
           </div>
         )}
+
+        {/* Model Path Input */}
+        <div style={{ marginBottom: '16px' }}>
+          <label
+            htmlFor="model-path"
+            style={{
+              display: 'block',
+              marginBottom: '6px',
+              fontSize: '14px',
+              fontWeight: 500,
+              color: '#495057',
+            }}
+          >
+            Model Path
+          </label>
+          <input
+            id="model-path"
+            type="text"
+            value={modelPath}
+            onChange={(e) => setModelPath(e.target.value)}
+            placeholder="e.g. /absolute/path/to/model.pt"
+            style={{
+              width: '100%',
+              padding: '8px',
+              fontSize: '13px',
+              border: '1px solid #ced4da',
+              borderRadius: '4px',
+              boxSizing: 'border-box',
+              fontFamily: 'monospace',
+            }}
+          />
+          <div style={{ marginTop: '4px', fontSize: '12px', color: '#868e96' }}>
+            留空：建立一個 dummy Transformer model 進行測試
+          </div>
+        </div>
 
         <div style={{ marginBottom: '24px' }}>
           <button
