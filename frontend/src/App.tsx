@@ -49,7 +49,13 @@ function App() {
 
     switch (action) {
       case 'load_model':
-        setModelLoaded(!!msg.result)
+        if (msg.result === false && msg.error) {
+          setError(msg.error as string)
+        } else if (msg.error) {
+          setError(msg.error as string)
+        } else {
+          setModelLoaded(!!msg.result)
+        }
         setLoading(false)
         break
       case 'get_token_features':

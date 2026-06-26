@@ -82,6 +82,18 @@ async def websocket_visualize(websocket: WebSocket):
             elif action == "load_model":
                 path = msg.get("path")
                 device = msg.get("device", "cuda" if engine.is_cuda_available() else "cpu")
+                
+                # Expand user path for better error reporting
+                if path:
+                    expanded_path = os.path.expanduser(path)
+                    if not os.path.exists(expanded_path):
+                        await websocket.send_json({
+                            "action": "load_model", 
+                            "result": False,
+                            "error": f"Model path not found: {path} (expanded: {expanded_path})"
+                        })
+                        continue
+                
                 result = engine.load_model(path, device=device)
                 await websocket.send_json({"action": "load_model", "result": result})
 

@@ -100,6 +100,8 @@ class TransformerModelEngine:
         self._device = device
 
         # If no path provided, instantiate a dummy model for development
+        if path is not None:
+            path = os.path.expanduser(path)
         if path is None or not os.path.exists(path):
             print("[TransformerModelEngine] No model file provided; creating dummy transformer.")
             # Use default hyperparameters
