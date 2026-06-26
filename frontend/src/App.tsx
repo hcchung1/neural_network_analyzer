@@ -7,7 +7,13 @@ import EmbeddingView from './components/EmbeddingView'
 import AttentionHeatmap from './components/AttentionHeatmap'
 import OutputView from './components/OutputView'
 
-const WS_URL = 'ws://localhost:8000/ws/visualize'
+const WS_URL = (() => {
+  // Auto-detect WebSocket URL based on current page location
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.hostname
+  const port = window.location.port ? `:${window.location.port}` : ''
+  return `${protocol}//${host}${port}/ws/visualize`
+})()
 
 function App() {
   const { status, lastMessage, send } = useWebSocket(WS_URL)
