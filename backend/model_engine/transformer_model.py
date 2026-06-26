@@ -48,6 +48,10 @@ def _try_import_mahjong_transformer():
         if root.exists():
             try:
                 import importlib.util
+                # Add the Transformer directory to sys.path so transformer.py can find utils
+                if str(root) not in sys.path:
+                    sys.path.insert(0, str(root))
+                
                 spec = importlib.util.spec_from_file_location(
                     "transformer_module", str(root / "transformer.py")
                 )
