@@ -121,6 +121,15 @@ class TransformerModelEngine:
                 self._model = self._create_dummy_model()
                 self._model.load_state_dict(checkpoint["state_dict"])
                 self._model_class_name = type(self.model).__name__
+            elif isinstance(checkpoint, dict) and "model" in checkpoint:
+                # Handle checkpoints saved with torch.save({"model": model}, path)
+                self._model = checkpoint["model"]
+                self._model_class_name = type(self._model).__name__
+            elif isinstance(checkpoint, dict):
+                # Direct state_dict (OrderedDict of parameters)
+                self._model = self._create_dummy_model()
+                self._model.load_state_dict(checkpoint)
+                self._model_class_name = type(self._model).__name__
             else:
                 self._model = checkpoint
                 self._model_class_name = type(self._model).__name__
