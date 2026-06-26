@@ -113,8 +113,11 @@ function App() {
       hasRequested.current = true
       return
     }
-    requestFeatures()
-  }, [selectedToken, currentLayer, requestFeatures])
+    // Only auto-request if model is loaded to avoid unnecessary requests on load
+    if (modelLoaded) {
+      requestFeatures()
+    }
+  }, [selectedToken, currentLayer, requestFeatures, modelLoaded])
 
   const handleLoadModel = () => {
     setLoading(true)
@@ -224,50 +227,44 @@ function App() {
         <div style={{ marginBottom: '24px' }}>
           <button
             onClick={handleLoadModel}
-            disabled={loading}
             style={{
               width: '100%',
               padding: '10px',
               marginBottom: '8px',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: 'pointer',
               backgroundColor: '#4dabf7',
               color: '#fff',
               border: 'none',
               borderRadius: '4px',
-              opacity: loading ? 0.7 : 1,
             }}
           >
             Load Model
           </button>
           <button
             onClick={handleRegisterHooks}
-            disabled={loading}
             style={{
               width: '100%',
               padding: '10px',
               marginBottom: '8px',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: 'pointer',
               backgroundColor: '#69db7c',
               color: '#fff',
               border: 'none',
               borderRadius: '4px',
-              opacity: loading ? 0.7 : 1,
             }}
           >
             Register Hooks
           </button>
           <button
             onClick={handleRunForward}
-            disabled={loading}
             style={{
               width: '100%',
               padding: '10px',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: 'pointer',
               backgroundColor: '#ffa94d',
               color: '#fff',
               border: 'none',
               borderRadius: '4px',
-              opacity: loading ? 0.7 : 1,
             }}
           >
             Run Forward

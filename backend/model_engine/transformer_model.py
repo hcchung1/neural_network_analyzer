@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -22,6 +24,46 @@ except ImportError:
     _TORCH_AVAILABLE = False
     torch = None  # type: ignore
     nn = None  # type: ignore
+
+# Try to import the real MahjongTransformer
+_MAHJONG_TRANSFORMER = None
+
+def _try_import_mahjong_transformer():
+    """Try to import MahjongTransformer from the project."""
+    global _MAHJONG_TRANSFORMER
+    if _MAHJONG_TRANSFORMER is not None:
+        return _MAHJONG_TRANSFORMER
+    
+    # Try multiple possible paths
+    possible_roots = [
+        # From ArchAnalyzer root (go up 4 levels from backend/model_engine/)
+        Path(__file__).parent.parent.parent.parent / "Transformer",
+        # From current working directory
+        Path.cwd() / "Transformer",
+        # Absolute path (adjust if needed for your container)
+        Path("/workspace/Study/Mahjong-Hidden-Information-Forecast/Transformer"),
+    ]
+    
+    for root in possible_roots:
+        if root.exists():
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "transformer_module", str(root / "transformer.py")
+                )
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules["transformer_module"] = module
+                    spec.loader.exec_module(module)
+                    _MAHJONG_TRANSFORMER = module.MahjongTransformer
+                    print(f"[TransformerModelEngine] Successfully imported MahjongTransformer from {root}")
+                    return _MAHJONG_TRANSFORMER
+            except Exception as e:
+                print(f"[TransformerModelEngine] Failed to import from {root}: {e}")
+                continue
+    
+    print("[TransformerModelEngine] Could not import MahjongTransformer, using dummy model")
+    return None
 
 
 class DummyModule:
@@ -111,27 +153,41 @@ class TransformerModelEngine:
             return True
 
         try:
-            # Assume a torch.save/full pickle of state_dict or full model
-            checkpoint = torch.load(path, map_location=device)
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                self._model = self._create_dummy_model()
-                self._model.load_state_dict(checkpoint["model_state_dict"])
-                self._model_class_name = type(self._model).__name__
-            elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-                self._model = self._create_dummy_model()
-                self._model.load_state_dict(checkpoint["state_dict"])
-                self._model_class_name = type(self.model).__name__
-            elif isinstance(checkpoint, dict) and "model" in checkpoint:
-                # Handle checkpoints saved with torch.save({"model": model}, path)
-                self._model = checkpoint["model"]
-                self._model_class_name = type(self._model).__name__
-            elif isinstance(checkpoint, dict):
-                # Direct state_dict (OrderedDict of parameters)
-                self._model = self._create_dummy_model()
-                self._model.load_state_dict(checkpoint)
-                self._model_class_name = type(self._model).__name__
+            # Try to import the real MahjongTransformer first
+            MahjongTransformer = _try_import_mahjong_transformer()
+            
+            if MahjongTransformer is not None:
+                print("[TransformerModelEngine] Using real MahjongTransformer")
+                self._model = MahjongTransformer()
+                checkpoint = torch.load(path, map_location=device)
+                
+                if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                    self._model.load_state_dict(checkpoint["model_state_dict"])
+                elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+                    self._model.load_state_dict(checkpoint["state_dict"])
+                elif isinstance(checkpoint, dict):
+                    self._model.load_state_dict(checkpoint)
+                else:
+                    self._model = checkpointisz  # full model object saved directly
+                    
+                self._model_class_name = "MahjongTransformer"
             else:
-                self._model = checkpoint
+                # Fall back to dummy model
+                print("[TransformerModelEngine] Using dummy model (MahjongTransformer not found)")
+                self._model = self._create_dummy_model()
+                checkpoint = torch.load(path, map_location=device)
+                
+                if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                    self._model.load_state_dict(checkpoint["model_state_dict"])
+                elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+                    self._model.load_state_dict(checkpoint["state_dict"])
+                elif isinstance(checkpoint, dict) and "model" in checkpoint:
+                    self._model = checkpoint["model"]
+                elif isinstance(checkpoint, dict):
+                    self._model.load_state_dict(checkpoint)
+                else:
+                    self._model = checkpoint
+                    
                 self._model_class_name = type(self._model).__name__
 
             self._model.to(device)
