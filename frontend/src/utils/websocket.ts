@@ -1,47 +1,103 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 export type WSMessage = {
   action: string
-  [key: string]: unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any
 }
 
 export type WSStatus = 'connecting' | 'open' | 'closed' | 'error'
 
-export function useWebSocket(url: string) {
+const MAX_RECONNECT_ATTEMPTS = 10
+const BASE_RECONNECT_DELAY = 1000 // 1 second
+
+export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void) {
   const [ws, setWs] = useState<WebSocket | null>(null)
   const [status, setStatus] = useState<WSStatus>('connecting')
   const [lastMessage, setLastMessage] = useState<unknown>(null)
+  const reconnectAttempts = useRef(0)
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isManualClose = useRef(false)
+  const onMessageRef = useRef(onMessage)
+
+  // Update ref when onMessage changes
+  useEffect(() => {
+    onMessageRef.current = onMessage
+  }, [onMessage])
 
   const connect = useCallback(() => {
-    const socket = new WebSocket(url)
-
-    socket.onopen = () => {
-      setStatus('open')
+    if (isManualClose.current) return
+    if (reconnectAttempts.current >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[WebSocket] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`)
+      setStatus('error')
+      return
     }
 
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        setLastMessage(data)
-      } catch {
-        setLastMessage(event.data)
+    try {
+      const socket = new WebSocket(url)
+
+      socket.onopen = () => {
+        console.log(`[WebSocket] Connected to ${url}`)
+        setStatus('open')
+        reconnectAttempts.current = 0 // Reset on successful connection
       }
-    }
 
-    socket.onclose = () => {
-      setStatus('closed')
-    }
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          setLastMessage(data)
+          // Also call the onMessage callback if provided
+          if (onMessageRef.current) {
+            onMessageRef.current(data)
+          }
+        } catch {
+          setLastMessage(event.data)
+          if (onMessageRef.current) {
+            onMessageRef.current(event.data)
+          }
+        }
+      }
 
-    socket.onerror = () => {
+      socket.onclose = (event) => {
+        console.log(`[WebSocket] Connection closed (code: ${event.code}, reason: ${event.reason || 'N/A'})`)
+        setStatus('closed')
+        
+        // Auto-reconnect with exponential backoff
+        if (!isManualClose.current) {
+          const delay = Math.min(
+            BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
+            30000 // Max 30 seconds
+          )
+          reconnectAttempts.current += 1
+          console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})...`)
+          
+          reconnectTimer.current = setTimeout(() => {
+            connect()
+          }, delay)
+        }
+      }
+
+      socket.onerror = (error) => {
+        console.error('[WebSocket] Error:', error)
+        setStatus('error')
+      }
+
+      setWs(socket)
+    } catch (err) {
+      console.error('[WebSocket] Failed to create connection:', err)
       setStatus('error')
     }
-
-    setWs(socket)
   }, [url])
 
   useEffect(() => {
+    isManualClose.current = false
     connect()
+    
     return () => {
+      isManualClose.current = true
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current)
+      }
       ws?.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -50,11 +106,26 @@ export function useWebSocket(url: string) {
   const send = useCallback(
     (msg: WSMessage) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(msg))
+        console.log('[WebSocket] Sending:', msg.action, 'bufferedAmount:', ws.bufferedAmount)
+        try {
+          const data = JSON.stringify(msg)
+          ws.send(data)
+          console.log('[WebSocket] Sent successfully:', msg.action, 'data length:', data.length)
+        } catch (err) {
+          console.error('[WebSocket] Failed to send message:', msg.action, err)
+        }
+      } else {
+        console.warn('[WebSocket] Cannot send message, connection not open. Status:', status, 'readyState:', ws?.readyState)
       }
     },
-    [ws]
+    [ws, status]
   )
 
-  return { status, lastMessage, send, connect }
+  const reconnect = useCallback(() => {
+    reconnectAttempts.current = 0
+    isManualClose.current = false
+    connect()
+  }, [connect])
+
+  return { status, lastMessage, send, reconnect }
 }

@@ -20,24 +20,34 @@ const InputFeatures: React.FC<InputFeaturesProps> = ({ features }) => {
           marginTop: '12px',
         }}
       >
-        {features.map((val, idx) => (
-          <div
-            key={idx}
-            title={`Index ${idx}: ${val.toFixed(4)}`}
-            style={{
-              height: '32px',
-              backgroundColor: `rgba(70, 130, 180, ${Math.min(Math.abs(val) + 0.1, 1)})`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '10px',
-              color: '#fff',
-              borderRadius: '2px',
-            }}
-          >
-            {idx}
-          </div>
-        ))}
+        {features.map((val, idx) => {
+          // Format small values with scientific notation
+          const displayVal = Math.abs(val) < 0.01 ? val.toExponential(1) : val.toFixed(2)
+          // Calculate color intensity based on absolute value (log scale for better visibility)
+          const intensity = Math.min(Math.log10(Math.abs(val) + 1.01) / Math.log10(2), 1)
+          const isPositive = val >= 0
+          return (
+            <div
+              key={idx}
+              title={`Index ${idx}: ${val.toExponential(4)}`}
+              style={{
+                height: '32px',
+                backgroundColor: isPositive
+                  ? `rgba(70, 130, 180, ${0.15 + intensity * 0.85})`
+                  : `rgba(220, 80, 80, ${0.15 + intensity * 0.85})`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '9px',
+                color: intensity > 0.5 ? '#fff' : '#333',
+                borderRadius: '2px',
+                border: '1px solid #ddd',
+              }}
+            >
+              {displayVal}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

@@ -11,6 +11,11 @@ const EmbeddingView: React.FC<EmbeddingViewProps> = ({ embedding, projected, hig
     return <div style={{ padding: '16px', color: '#888' }}>No embedding data</div>
   }
 
+  // Handle non-array embedding values (e.g., scalar returned from backend error)
+  if (!Array.isArray(embedding)) {
+    return <div style={{ padding: '16px', color: '#e03131' }}>Invalid embedding data: expected array, got {typeof embedding}</div>
+  }
+
   // Simple bar chart visualization of embedding vector
   const maxVal = Math.max(...embedding.map(Math.abs))
 

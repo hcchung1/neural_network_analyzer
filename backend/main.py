@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+import traceback
+import sys
 from contextlib import asynccontextmanager
+from typing import Any, Dict
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,105 +65,169 @@ async def websocket_visualize(websocket: WebSocket):
     engine = get_model_engine()
     registry = _hook_registry
 
+    async def _send_error(action: str, message: str, extra: dict | None = None) -> None:
+        payload = {"action": action, "error": message}
+        if extra:
+            payload.update(extra)
+        await websocket.send_json(payload)
+
+    async def _handle_load_model(msg: dict) -> None:
+        path = msg.get("path")
+        device = msg.get("device", "cuda" if engine.is_cuda_available() else "cpu")
+        
+        if path:
+            expanded_path = os.path.expanduser(path)
+            if not os.path.exists(expanded_path):
+                await _send_error(
+                    "load_model",
+                    f"Model path not found: {path} (expanded: {expanded_path})"
+                )
+                return
+        
+        try:
+            result = engine.load_model(path, device=device)
+            await websocket.send_json({"action": "load_model", "result": result})
+        except Exception as e:
+            traceback.print_exc()
+            await _send_error("load_model", f"Failed to load model: {str(e)}")
+
+    async def _handle_register_hooks(msg: dict) -> None:
+        if registry is None:
+            await _send_error("register_hooks", "HookRegistry not initialized")
+            return
+        layers = msg.get("layers", ["embedding", "attention", "ffn", "output"])
+        try:
+            registry.register_all(engine.model, layers)
+            await websocket.send_json({
+                "action": "register_hooks",
+                "status": "ok",
+                "layers": layers
+            })
+        except Exception as e:
+            traceback.print_exc()
+            await _send_error("register_hooks", f"Failed to register hooks: {str(e)}")
+
+    async def _handle_run_forward(msg: dict) -> None:
+        input_data = msg.get("input")
+        if input_data is None:
+            await _send_error("run_forward", "Missing 'input' field")
+            return
+        
+        if not registry:
+            await _send_error("run_forward", "HookRegistry not initialized")
+            return
+
+        try:
+            result = engine.forward(input_data)
+            # After forward, also return cached features from hooks
+            token_idx = msg.get("token_idx", 0)
+            features = registry.get_features(0, token_idx)
+            await websocket.send_json({
+                "action": "run_forward",
+                "result": result,
+                "features": features
+            })
+        except Exception as e:
+            traceback.print_exc()
+            await _send_error("run_forward", f"Forward pass failed: {str(e)}")
+
     try:
         while True:
             raw = await websocket.receive_text()
+            print(f"[DEBUG] Raw message received: {raw[:200]}...")
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({"error": "Invalid JSON"})
+                await _send_error("unknown", "Invalid JSON")
                 continue
 
             action = msg.get("action")
+            print(f"[DEBUG] Processing action: {action}")
 
             if action == "clear_cache":
                 if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
+                    await _send_error("clear_cache", "HookRegistry not initialized")
                     continue
                 registry.clear_cache()
                 await websocket.send_json({"action": "clear_cache", "status": "ok"})
 
             elif action == "load_model":
-                path = msg.get("path")
-                device = msg.get("device", "cuda" if engine.is_cuda_available() else "cpu")
-                
-                # Expand user path for better error reporting
-                if path:
-                    expanded_path = os.path.expanduser(path)
-                    if not os.path.exists(expanded_path):
-                        await websocket.send_json({
-                            "action": "load_model", 
-                            "result": False,
-                            "error": f"Model path not found: {path} (expanded: {expanded_path})"
-                        })
-                        continue
-                
-                result = engine.load_model(path, device=device)
-                await websocket.send_json({"action": "load_model", "result": result})
+                await _handle_load_model(msg)
 
             elif action == "register_hooks":
-                if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
-                    continue
-                # Register forward hooks on current model
-                layers = msg.get("layers", ["embedding", "attention", "ffn", "output"])
-                registry.register_all(engine.model, layers)
-                await websocket.send_json({"action": "register_hooks", "status": "ok", "layers": layers})
+                await _handle_register_hooks(msg)
 
             elif action == "get_token_features":
-                batch_idx = msg.get("batch_idx", 0)
-                token_idx = msg.get("token_idx")
-                layer_idx = msg.get("layer_idx")
                 if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
+                    await _send_error("get_token_features", "HookRegistry not initialized")
                     continue
-                data = registry.get_features(batch_idx, token_idx, layer_idx)
+                data = registry.get_features(
+                    msg.get("batch_idx", 0),
+                    msg.get("token_idx"),
+                    msg.get("layer_idx")
+                )
                 await websocket.send_json({"action": "get_token_features", "data": data})
 
             elif action == "get_token_embedding":
-                batch_idx = msg.get("batch_idx", 0)
-                token_idx = msg.get("token_idx")
                 if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
+                    await _send_error("get_token_embedding", "HookRegistry not initialized")
                     continue
-                data = registry.get_embedding(batch_idx, token_idx)
-                await websocket.send_json({"action": "get_token_embedding", "data": data})
+                try:
+                    print(f"[DEBUG] Processing get_token_embedding request...")
+                    data = registry.get_embedding(
+                        msg.get("batch_idx", 0),
+                        msg.get("token_idx")
+                    )
+                    print(f"[DEBUG] get_token_embedding result: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                    await websocket.send_json({"action": "get_token_embedding", "data": data})
+                    print(f"[DEBUG] get_token_embedding response sent")
+                except Exception as e:
+                    print(f"[ERROR] get_token_embedding failed: {e}")
+                    traceback.print_exc()
+                    await _send_error("get_token_embedding", str(e))
 
             elif action == "get_attention":
-                layer_idx = msg.get("layer_idx", 0)
-                head_idx = msg.get("head_idx")
                 if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
+                    await _send_error("get_attention", "HookRegistry not initialized")
                     continue
-                data = registry.get_attention(layer_idx, head_idx)
-                await websocket.send_json({"action": "get_attention", "data": data})
+                try:
+                    print(f"[DEBUG] Processing get_attention request...")
+                    data = registry.get_attention(
+                        msg.get("layer_idx", 0),
+                        msg.get("head_idx")
+                    )
+                    print(f"[DEBUG] get_attention result: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                    await websocket.send_json({"action": "get_attention", "data": data})
+                    print(f"[DEBUG] get_attention response sent")
+                except Exception as e:
+                    print(f"[ERROR] get_attention failed: {e}")
+                    traceback.print_exc()
+                    await _send_error("get_attention", str(e))
 
             elif action == "get_output":
                 if registry is None:
-                    await websocket.send_json({"error": "HookRegistry not initialized"})
+                    await _send_error("get_output", "HookRegistry not initialized")
                     continue
+                print(f"[DEBUG] Processing get_output request...")
                 data = registry.get_output()
+                print(f"[DEBUG] get_output result: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
                 await websocket.send_json({"action": "get_output", "data": data})
+                print(f"[DEBUG] get_output response sent")
 
             elif action == "run_forward":
-                # Expect input tensor serialized as list
-                input_data = msg.get("input")
-                if input_data is None:
-                    await websocket.send_json({"error": "Missing 'input' field"})
-                    continue
-                result = engine.forward(input_data)
-                # After forward, also return cached features from hooks
-                features = registry.get_features(0, msg.get("token_idx", 0)) if registry else {}
-                await websocket.send_json({"action": "run_forward", "result": result, "features": features})
+                await _handle_run_forward(msg)
 
             else:
-                await websocket.send_json({"error": f"Unknown action: {action}"})
+                await _send_error("unknown", f"Unknown action: {action}")
 
     except WebSocketDisconnect:
         print("[WebSocket] Client disconnected")
     except Exception as e:
-        print(f"[WebSocket] Error: {e}")
+        print(f"[WebSocket] Unexpected error: {e}")
+        traceback.print_exc()
         try:
-            await websocket.send_json({"error": str(e)})
+            await _send_error("server_error", "Internal server error")
         except Exception:
             pass
+    finally:
+        print("[WebSocket] Connection closed")

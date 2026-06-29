@@ -7,6 +7,10 @@ echo "🚀 Starting ArchAnalyzer..."
 BACKEND_PORT=${BACKEND_PORT:-8080}
 FRONTEND_PORT=${FRONTEND_PORT:-3001}
 
+# Export for Vite config to read
+export BACKEND_PORT
+export FRONTEND_PORT
+
 echo "📡 後端端口: $BACKEND_PORT"
 echo "🎨 前端端口: $FRONTEND_PORT"
 
@@ -21,7 +25,16 @@ echo "🎨 前端端口: $FRONTEND_PORT"
 )
 
 # 等待後端啟動
-sleep 2
+echo "⏳ Waiting for backend to start..."
+sleep 3
+
+# 測試後端是否可用
+echo "🔍 Checking backend health..."
+if curl -s "http://localhost:$BACKEND_PORT/health" > /dev/null 2>&1; then
+  echo "✅ Backend is healthy"
+else
+  echo "⚠️  Backend health check failed, but continuing..."
+fi
 
 # 啟動前端
 (

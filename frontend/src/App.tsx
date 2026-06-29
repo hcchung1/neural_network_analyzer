@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { useWebSocket } from './utils/websocket'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useWebSocket, WSMessage } from './utils/websocket'
 import TokenSelector from './components/TokenSelector'
 import LayerSlider from './components/LayerSlider'
 import InputFeatures from './components/InputFeatures'
@@ -8,15 +8,12 @@ import AttentionHeatmap from './components/AttentionHeatmap'
 import OutputView from './components/OutputView'
 
 const WS_URL = (() => {
-  // Auto-detect WebSocket URL based on current page location
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.hostname
-  const port = window.location.port ? `:${window.location.port}` : ''
-  return `${protocol}//${host}${port}/ws/visualize`
+  // 出战
+  const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://'
+  return `${protocol}${window.location.host}/ws/visualize`
 })()
 
 function App() {
-  const { status, lastMessage, send } = useWebSocket(WS_URL)
   const [selectedToken, setSelectedToken] = useState(0)
   const [currentLayer, setCurrentLayer] = useState(0)
   const [maxLayer] = useState(4)
@@ -32,14 +29,26 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [modelPath, setModelPath] = useState<string>('')
 
-  const hasRequested = useRef(false)
+  // Keep refs for latest state in callbacks
+  const sendRef = useRef<((msg: WSMessage) => void) | null>(null)
+  const requestFeaturesRef = useRef<(() => void) | null>(null)
+  const selectedTokenRef = useRef(selectedToken)
+  const currentLayerRef = useRef(currentLayer)
 
-  // Handle incoming WebSocket messages
   useEffect(() => {
-    if (!lastMessage || typeof lastMessage !== 'object') return
+    selectedTokenRef.current = selectedToken
+  }, [selectedToken])
 
-    const msg = lastMessage as Record<string, unknown>
+  useEffect(() => {
+    currentLayerRef.current = currentLayer
+  }, [currentLayer])
+
+  // Handle incoming WebSocket messages via callback to avoid React batching issues
+  const handleMessage: (rawMsg: WSMessage) => void = useCallback((rawMsg) => {
+    const msg = rawMsg as Record<string, unknown>
     const action = msg.action as string
+
+    console.log(`[App] Received ${action} message:`, JSON.stringify(msg, null, 2))
 
     if (msg.error) {
       setError(msg.error as string)
@@ -49,17 +58,38 @@ function App() {
 
     switch (action) {
       case 'load_model':
-        if (msg.result === false && msg.error) {
-          setError(msg.error as string)
-        } else if (msg.error) {
+        console.log('[App] load_model response:', JSON.stringify(msg))
+        if (msg.error) {
           setError(msg.error as string)
         } else {
-          setModelLoaded(!!msg.result)
+          const isLoaded = !!msg.result || msg.result === 'ok' || msg.status === 'ok'
+          console.log(`[App] Setting modelLoaded=${isLoaded}, result=${JSON.stringify(msg.result)}`)
+          setModelLoaded(isLoaded)
+          if (isLoaded) {
+            console.log('[App] Model loaded, auto-registering hooks...')
+            setTimeout(() => {
+              if (sendRef.current) {
+                sendRef.current({ action: 'register_hooks', layers: ['embedding', 'attention', 'ffn', 'output'] })
+              }
+            }, 100)
+          }
         }
         setLoading(false)
         break
+      case 'register_hooks':
+        console.log('[App] register_hooks response:', JSON.stringify(msg))
+        if (msg.status === 'ok' || msg.result === 'ok' || msg.result === true) {
+          console.log('[App] Hooks registered successfully, requesting features...')
+          if (requestFeaturesRef.current) {
+            requestFeaturesRef.current()
+          }
+        } else {
+          console.warn('[App] Hooks registration failed:', msg)
+        }
+        break
       case 'get_token_features':
         setLoading(false)
+        console.log('[App] get_token_features data:', msg.data)
         if (msg.data && typeof msg.data === 'object') {
           const data = msg.data as Record<string, unknown>
           const firstKey = Object.keys(data)[0]
@@ -70,54 +100,72 @@ function App() {
         break
       case 'get_token_embedding':
         setLoading(false)
+        console.log('[App] get_token_embedding data:', msg.data)
         if (msg.data && (msg.data as Record<string, unknown>).embedding) {
           setEmbedding(((msg.data as Record<string, unknown>).embedding as number[]))
         }
         break
       case 'get_attention':
         setLoading(false)
+        console.log('[App] get_attention data:', msg.data)
         if (msg.data && (msg.data as Record<string, unknown>).attention) {
           setAttention(((msg.data as Record<string, unknown>).attention as number[][]))
         }
         break
       case 'get_output':
         setLoading(false)
-        if (msg.data && (msg.data as Record<string, unknown>).output) {
-          const out = (msg.data as Record<string, unknown>).output
-          if (Array.isArray(out)) {
-            setOutput(out as number[])
+        console.log('[App] get_output data:', msg.data)
+        if (msg.data) {
+          const data = msg.data as Record<string, unknown>
+          // Backend returns logits as 2D array [[val1, val2]], extract first element
+          if (data.logits && Array.isArray(data.logits) && (data.logits as unknown[]).length > 0) {
+            const logitsArray = data.logits as number[][]
+            if (logitsArray.length > 0 && Array.isArray(logitsArray[0])) {
+              setOutput(logitsArray[0])
+            } else {
+              setOutput(data.logits as number[])
+            }
           }
         }
         break
       case 'run_forward':
         setLoading(false)
-        // After forward, re-request all features to refresh the UI
-        requestFeatures()
+        console.log('[App] run_forward result:', msg.result)
+        if (requestFeaturesRef.current) {
+          requestFeaturesRef.current()
+        }
         break
     }
-  }, [lastMessage])
+  }, [])
+
+  const { status, send } = useWebSocket(WS_URL, handleMessage)
+
+  // Store send in ref for callbacks
+  useEffect(() => {
+    sendRef.current = send
+  }, [send])
 
   const requestFeatures = useCallback(() => {
-    if (status !== 'open') return
+    if (!sendRef.current) return
     setLoading(true)
     setError(null)
-    send({ action: 'get_token_features', batch_idx: 0, token_idx: selectedToken, layer_idx: currentLayer })
-    send({ action: 'get_token_embedding', batch_idx: 0, token_idx: selectedToken })
-    send({ action: 'get_attention', layer_idx: currentLayer })
-    send({ action: 'get_output' })
-  }, [send, selectedToken, currentLayer, status])
+    sendRef.current({ action: 'get_token_features', batch_idx: 0, token_idx: selectedTokenRef.current, layer_idx: currentLayerRef.current })
+    sendRef.current({ action: 'get_token_embedding', batch_idx: 0, token_idx: selectedTokenRef.current })
+    sendRef.current({ action: 'get_attention', layer_idx: currentLayerRef.current })
+    sendRef.current({ action: 'get_output' })
+  }, [])
+
+  // Store requestFeatures in ref for handleMessage callback
+  useEffect(() => {
+    requestFeaturesRef.current = requestFeatures
+  }, [requestFeatures])
 
   // Auto-request on token/layer change (only after initial request)
   useEffect(() => {
-    if (!hasRequested.current) {
-      hasRequested.current = true
-      return
-    }
-    // Only auto-request if model is loaded to avoid unnecessary requests on load
     if (modelLoaded) {
       requestFeatures()
     }
-  }, [selectedToken, currentLayer, requestFeatures, modelLoaded])
+  }, [selectedToken, currentLayer, modelLoaded, requestFeatures])
 
   const handleLoadModel = () => {
     setLoading(true)
@@ -130,10 +178,14 @@ function App() {
   }
 
   const handleRunForward = () => {
-    // Dummy input: batch_size=1, seq_len=16
+    // Proper input shape: batch_size=1, seq_len=49, feature_dim=12308
     setLoading(true)
     setError(null)
-    const dummyInput = [Array.from({ length: 16 }, (_, i) => i % 128)]
+    const dummyInput = Array.from({ length: 1 }, () =>
+      Array.from({ length: 49 }, () =>
+        Array.from({ length: 12308 }, () => Math.random() * 2 - 1)
+      )
+    )
     send({ action: 'run_forward', input: dummyInput })
   }
 
@@ -170,7 +222,7 @@ function App() {
 
         {loading && (
           <div style={{ padding: '8px 0', color: '#666', fontSize: '14px' }}>
-            ⏳ Loading...
+            ⏳攻速加成……
           </div>
         )}
 
@@ -273,7 +325,7 @@ function App() {
 
         {modelLoaded && (
           <div style={{ color: '#28a745', fontSize: '14px', marginBottom: '16px' }}>
-            Model loaded successfully
+            ✅ Model loaded and hooks registered
           </div>
         )}
 
