@@ -79,7 +79,6 @@ class DummyModel:
     """Placeholder model when torch is unavailable."""
     pass
 
-
 class TransformerModelEngine:
     """Singleton engine to load and run the MahjongTransformer model."""
 
@@ -99,6 +98,9 @@ class TransformerModelEngine:
         self._is_loaded: bool = False
         self._model_class_name: str = "Unknown"
         self._initialized = True
+        # Store attention weights captured from any model type
+        self._captured_attention: List[Any] = []
+        self._attention_hooks: List[Any] = []
 
     # ------------------------------------------------------------------
     # Properties
@@ -313,6 +315,90 @@ class TransformerModelEngine:
             return False
 
     # ------------------------------------------------------------------
+    # Attention hook management
+    # ------------------------------------------------------------------
+    def _register_attention_hooks(self) -> None:
+        """Register hooks on attention modules to capture attention weights.
+        
+        For PyTorch's MultiheadAttention, uses register_forward_hook.
+        For custom MultiHeadAttention (e.g., MahjongTransformer), monkey-patches
+        scaled_dot_product_attention to capture weights.
+        """
+        if self._model is None:
+            return
+        
+        # Clear any existing hooks
+        self._remove_attention_hooks()
+        self._captured_attention = []
+        
+        def make_hook(layer_idx):
+            def hook(module, input, output):
+                # For PyTorch MultiheadAttention, output is (attn_output, attn_weights)
+                if isinstance(output, tuple) and len(output) >= 2:
+                    attn_weights = output[1]
+                    if attn_weights is not None:
+                        while len(self._captured_attention) <= layer_idx:
+                            self._captured_attention.append(None)
+                        self._captured_attention[layer_idx] = attn_weights.detach().cpu() if hasattr(attn_weights, 'detach') else attn_weights
+            return hook
+        
+        # Find attention modules and register hooks / patches
+        layer_idx = 0
+        for name, module in self._model.named_modules():
+            module_type = type(module).__name__
+            # Match PyTorch MultiheadAttention (has forward hook with tuple output)
+            if module_type == 'MultiheadAttention':
+                handle = module.register_forward_hook(make_hook(layer_idx))
+                self._attention_hooks.append(handle)
+                print(f"[TransformerModelEngine] Registered forward hook on {name} ({module_type})")
+                layer_idx += 1
+            # Match custom MultiHeadAttention (e.g., MahjongTransformer)
+            # forward() returns (output, attention_weights) tuple
+            elif module_type == 'MultiHeadAttention':
+                handle = module.register_forward_hook(make_hook(layer_idx))
+                self._attention_hooks.append(handle)
+                print(f"[TransformerModelEngine] Registered forward hook on {name} ({module_type})")
+                layer_idx += 1
+            # Also match modules with 'attention' in name that are not already handled
+            elif 'attention' in name.lower() and module_type not in ['MultiheadAttention', 'MultiHeadAttention']:
+                # Generic fallback: try forward hook
+                handle = module.register_forward_hook(make_hook(layer_idx))
+                self._attention_hooks.append(handle)
+                print(f"[TransformerModelEngine] Registered fallback hook on {name} ({module_type})")
+                layer_idx += 1
+        
+        if layer_idx == 0:
+            print("[TransformerModelEngine] Warning: No attention modules found for hook registration")
+
+    def _patch_multihead_attention(self, module: Any, layer_idx: int) -> None:
+        """Monkey-patch a custom MultiHeadAttention module to capture attention weights."""
+        import torch
+        import torch.nn.functional as F
+        
+        # Store reference to the original method
+        if not hasattr(module, '_original_scaled_dot_product_attention'):
+            module._original_scaled_dot_product_attention = module.scaled_dot_product_attention
+        
+        # Create a closure that captures layer_idx and self
+        _self = self
+        _layer_idx = layer_idx
+        
+        def patched_sdpa(Q, K, V, mask=None):
+            # Call original method
+            output, attn_weights = module._original_scaled_dot_product_attention(Q, K, V, mask)
+            
+            # Capture attention weights if available
+            if attn_weights is not None:
+                while len(_self._captured_attention) <= _layer_idx:
+                    _self._captured_attention.append(None)
+                _self._captured_attention[_layer_idx] = attn_weights.detach().cpu() if hasattr(attn_weights, 'detach') else attn_weights
+            
+            return output, attn_weights
+        
+        # Apply the patch
+        module.scaled_dot_product_attention = patched_sdpa
+
+    # ------------------------------------------------------------------
     # Dummy model creation for dev / when real weights missing
     # ------------------------------------------------------------------
     def _create_dummy_model(self) -> Any:
@@ -381,15 +467,43 @@ class TransformerModelEngine:
 
         try:
             if isinstance(input_data, list):
-                # Convert list to float tensor (not long!)
+                # MahjongTransformer expects float features, not integer token indices
                 tensor = torch.tensor(input_data, dtype=torch.float32, device=self._device)
             elif isinstance(input_data, np.ndarray):
                 tensor = torch.from_numpy(input_data).float().to(self._device)
             else:
+                # Assume it's already a tensor
                 tensor = input_data.to(self._device)
+                if not torch.is_floating_point(tensor):
+                    tensor = tensor.float()
+
+            # Register attention hooks before forward pass
+            self._register_attention_hooks()
 
             with torch.no_grad():
                 output = self._model(tensor)
+            
+            # Collect attention weights from attention modules (for real MahjongTransformer)
+            self._captured_attention = []
+            for name, module in self._model.named_modules():
+                module_type = type(module).__name__
+                if module_type == 'MultiHeadAttention':
+                    if hasattr(module, 'last_attention_weights') and module.last_attention_weights is not None:
+                        self._captured_attention.append(module.last_attention_weights.detach().cpu())
+                        print(f"[TransformerModelEngine] Collected attention weights from {name}: shape={module.last_attention_weights.shape}")
+                    else:
+                        self._captured_attention.append(None)
+                elif module_type == 'MultiheadAttention':
+                    # PyTorch native MHA - weights captured by hooks
+                    pass
+            
+            # Capture attention weights from model attributes (for dummy model compatibility)
+            if hasattr(self._model, 'last_attention_weights') and self._model.last_attention_weights is not None:
+                self._model._last_attention_weights = [
+                    w.detach().cpu() if hasattr(w, 'detach') else w 
+                    for w in self._model.last_attention_weights
+                ]
+                print(f"[TransformerModelEngine] Captured attention weights from model attribute: {len(self._model._last_attention_weights)} layers")
 
             return {
                 "output_shape": list(output.shape),
@@ -397,6 +511,84 @@ class TransformerModelEngine:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Public API for attention retrieval
+    # ------------------------------------------------------------------
+    def get_attention_weights(self, layer_idx: int, head_idx: Optional[int] = None) -> Dict[str, Any]:
+        """Get attention weights for a specific layer.
+        
+        Returns:
+            Dict with 'attention' key containing the weights, or 'error' key.
+        """
+        # Check engine's captured attention first (from hooks)
+        if self._captured_attention and any(w is not None for w in self._captured_attention):
+            if 0 <= layer_idx < len(self._captured_attention):
+                weights = self._captured_attention[layer_idx]
+                if weights is not None:
+                    if hasattr(weights, 'cpu'):
+                        weights_data = weights.cpu().detach().numpy().tolist()
+                    else:
+                        weights_data = weights
+                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
+                        weights_data = weights_data[head_idx]
+                    return {"attention": weights_data}
+                else:
+                    return {"error": f"Attention for layer {layer_idx} is None (hook may not have captured)"}
+            else:
+                actual_layers = len(self._captured_attention)
+                return {"error": f"Layer index {layer_idx} out of range. Engine has {actual_layers} layers."}
+        
+        # Check model's _last_attention_weights (set by forward())
+        if self._model is not None:
+            if hasattr(self._model, '_last_attention_weights') and self._model._last_attention_weights is not None:
+                if 0 <= layer_idx < len(self._model._last_attention_weights):
+                    weights = self._model._last_attention_weights[layer_idx]
+                    if hasattr(weights, 'cpu'):
+                        weights_data = weights.cpu().detach().numpy().tolist()
+                    else:
+                        weights_data = weights
+                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
+                        weights_data = weights_data[head_idx]
+                    return {"attention": weights_data}
+                else:
+                    actual_layers = len(self._model._last_attention_weights) if self._model._last_attention_weights else 0
+                    return {"error": f"Layer index {layer_idx} out of range. Model has {actual_layers} layers."}
+            
+            # Check model's last_attention_weights (for dummy model)
+            if hasattr(self._model, 'last_attention_weights') and self._model.last_attention_weights is not None:
+                if 0 <= layer_idx < len(self._model.last_attention_weights):
+                    weights = self._model.last_attention_weights[layer_idx]
+                    if hasattr(weights, 'cpu'):
+                        weights_data = weights.cpu().detach().numpy().tolist()
+                    else:
+                        weights_data = weights
+                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
+                        weights_data = weights_data[head_idx]
+                    return {"attention": weights_data}
+                else:
+                    actual_layers = len(self._model.last_attention_weights) if self._model.last_attention_weights else 0
+                    return {"error": f"Layer index {layer_idx} out of range. Model has {actual_layers} layers."}
+        
+        return {"error": "No attention weights available. Please run a forward pass first."}
+
+    def _remove_attention_hooks(self) -> None:
+        """Remove all registered attention hooks."""
+        for handle in self._attention_hooks:
+            handle.remove()
+        self._attention_hooks.clear()
+
+    def clear_attention_cache(self) -> None:
+        """Clear captured attention weights."""
+        self._captured_attention = []
+        self._remove_attention_hooks()
+
+    def __del__(self):
+        """Cleanup hooks on deletion."""
+        try:
+            self._remove_attention_hooks()
+        except Exception:
+            pass
 
 
 # Global accessor

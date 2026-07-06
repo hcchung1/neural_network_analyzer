@@ -6,6 +6,7 @@ import InputFeatures from './components/InputFeatures'
 import EmbeddingView from './components/EmbeddingView'
 import AttentionHeatmap from './components/AttentionHeatmap'
 import OutputView from './components/OutputView'
+import TrainingResultsPage from './pages/TrainingResultsPage'
 
 const WS_URL = (() => {
   // 出战
@@ -16,8 +17,9 @@ const WS_URL = (() => {
 function App() {
   const [selectedToken, setSelectedToken] = useState(0)
   const [currentLayer, setCurrentLayer] = useState(0)
-  const [maxLayer] = useState(4)
-  const [tokenCount] = useState(16)
+  const [maxLayer, setMaxLayer] = useState(4)
+  const [tokenCount, setTokenCount] = useState(16)
+  const [currentView, setCurrentView] = useState<'visualize' | 'training'>('visualize')
 
   // Data states
   const [inputFeatures, setInputFeatures] = useState<number[] | null>(null)
@@ -65,6 +67,13 @@ function App() {
           const isLoaded = !!msg.result || msg.result === 'ok' || msg.status === 'ok'
           console.log(`[App] Setting modelLoaded=${isLoaded}, result=${JSON.stringify(msg.result)}`)
           setModelLoaded(isLoaded)
+          // Update token count and max layer from model metadata
+          const meta = (msg.model_meta as Record<string, unknown>) || {}
+          const seqLen = typeof meta.seq_len === 'number' ? meta.seq_len : 49
+          const nLayers = typeof meta.n_layers === 'number' ? meta.n_layers : 4
+          console.log(`[App] Model metadata: seq_len=${seqLen}, n_layers=${nLayers}`)
+          setTokenCount(seqLen)
+          setMaxLayer(nLayers)
           if (isLoaded) {
             console.log('[App] Model loaded, auto-registering hooks...')
             setTimeout(() => {
@@ -79,9 +88,11 @@ function App() {
       case 'register_hooks':
         console.log('[App] register_hooks response:', JSON.stringify(msg))
         if (msg.status === 'ok' || msg.result === 'ok' || msg.result === true) {
-          console.log('[App] Hooks registered successfully, requesting features...')
-          if (requestFeaturesRef.current) {
-            requestFeaturesRef.current()
+          console.log('[App] Hooks registered successfully, running forward pass...')
+          // Trigger a forward pass to populate attention data and other cached features
+          if (sendRef.current) {
+            // Let backend auto-generate dummy input with correct dimensions
+            sendRef.current({ action: 'run_forward' })
           }
         } else {
           console.warn('[App] Hooks registration failed:', msg)
@@ -312,6 +323,7 @@ function App() {
             style={{
               width: '100%',
               padding: '10px',
+              marginBottom: '8px',
               cursor: 'pointer',
               backgroundColor: '#ffa94d',
               color: '#fff',
@@ -320,6 +332,20 @@ function App() {
             }}
           >
             Run Forward
+          </button>
+          <button
+            onClick={() => setCurrentView('training')}
+            style={{
+              width: '100%',
+              padding: '10px',
+              cursor: 'pointer',
+              backgroundColor: '#cc5de8',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+            }}
+          >
+            📊 Training Results
           </button>
         </div>
 
@@ -335,28 +361,34 @@ function App() {
 
       {/* Main content */}
       <main style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
-        <h1 style={{ marginTop: 0, marginBottom: '24px' }}>Transformer Token Visualization</h1>
+        {currentView === 'training' ? (
+          <TrainingResultsPage onBack={() => setCurrentView('visualize')} />
+        ) : (
+          <>
+            <h1 style={{ marginTop: 0, marginBottom: '24px' }}>Transformer Token Visualization</h1>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '16px',
-          }}
-        >
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
-            <InputFeatures features={inputFeatures} />
-          </div>
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
-            <EmbeddingView embedding={embedding} highlightIndex={selectedToken} />
-          </div>
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
-            <AttentionHeatmap attention={attention} tokenIndex={selectedToken} />
-          </div>
-          <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
-            <OutputView logits={output} />
-          </div>
-        </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '16px',
+              }}
+            >
+              <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
+                <InputFeatures features={inputFeatures} />
+              </div>
+              <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
+                <EmbeddingView embedding={embedding} highlightIndex={selectedToken} />
+              </div>
+              <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
+                <AttentionHeatmap attention={attention} tokenIndex={selectedToken} />
+              </div>
+              <div style={{ border: '1px solid #dee2e6', borderRadius: '8px', overflow: 'hidden' }}>
+                <OutputView logits={output} />
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   )

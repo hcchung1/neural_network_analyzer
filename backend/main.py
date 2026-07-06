@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.model import router as model_router
 from api.visualize import router as viz_router
+from api.training import router as training_router
 from model_engine.transformer_model import get_model_engine
 from hooks.registry import HookRegistry
 
@@ -51,6 +52,7 @@ app.add_middleware(
 # REST routers
 app.include_router(model_router, prefix="/api/model", tags=["model"])
 app.include_router(viz_router, prefix="/api/visualize", tags=["visualize"])
+app.include_router(training_router, prefix="/api/training", tags=["training"])
 
 
 @app.get("/health")
@@ -86,7 +88,15 @@ async def websocket_visualize(websocket: WebSocket):
         
         try:
             result = engine.load_model(path, device=device)
-            await websocket.send_json({"action": "load_model", "result": result})
+            # Get model metadata for frontend
+            model_meta = {}
+            if engine.model:
+                model = engine.model
+                model_meta['seq_len'] = getattr(model, 'seq_len', 49)
+                model_meta['input_features'] = getattr(model, 'input_features', None)
+                model_meta['n_layers'] = getattr(model, 'n_layers', None)
+                model_meta['d_model'] = getattr(model, 'd_model', None)
+            await websocket.send_json({"action": "load_model", "result": result, "model_meta": model_meta})
         except Exception as e:
             traceback.print_exc()
             await _send_error("load_model", f"Failed to load model: {str(e)}")
@@ -109,9 +119,39 @@ async def websocket_visualize(websocket: WebSocket):
 
     async def _handle_run_forward(msg: dict) -> None:
         input_data = msg.get("input")
+        
+        # Auto-generate dummy input if not provided, based on model dimensions
         if input_data is None:
-            await _send_error("run_forward", "Missing 'input' field")
-            return
+            if not engine.model:
+                await _send_error("run_forward", "Model not loaded")
+                return
+            try:
+                import numpy as np
+                import torch
+                
+                # Determine expected input dimensions from model
+                model = engine.model
+                seq_len = getattr(model, 'seq_len', 49)  # Default to 49 (common for Mahjong)
+                input_features = getattr(model, 'input_features', None)
+                
+                if input_features is None:
+                    # Try to infer from input_projection or proj_init/proj_act
+                    if hasattr(model, 'input_projection') and model.input_projection is not None:
+                        input_features = model.input_projection.in_features
+                    elif hasattr(model, 'proj_init') and model.proj_init is not None:
+                        # Heterogeneous tokens mode
+                        f_init = model.proj_init.in_features
+                        input_features = f_init  # Use F_INIT as base
+                    elif hasattr(model, 'proj_act') and model.proj_act is not None:
+                        input_features = model.proj_act.in_features
+                    else:
+                        input_features = 850  # Sensible default for Mahjong Transformer
+                
+                print(f"[run_forward] Auto-generating dummy input: batch=1, seq_len={seq_len}, features={input_features}")
+                input_data = np.random.randn(1, seq_len, input_features).tolist()
+            except Exception as e:
+                await _send_error("run_forward", f"Failed to auto-generate input: {str(e)}")
+                return
         
         if not registry:
             await _send_error("run_forward", "HookRegistry not initialized")

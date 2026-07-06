@@ -214,7 +214,43 @@ class HookRegistry:
             # Priority 1: Check model's last_attention_weights attribute (for custom models)
             if self._model is not None:
                 model = self._model
-                if hasattr(model, 'last_attention_weights') and model.last_attention_weights is not None:
+                # Check engine's _captured_attention first (from registered hooks)
+                from model_engine.transformer_model import get_model_engine
+                engine = get_model_engine()
+                if engine._captured_attention and any(w is not None for w in engine._captured_attention):
+                    if 0 <= layer_idx < len(engine._captured_attention):
+                        weights = engine._captured_attention[layer_idx]
+                        if weights is not None:
+                            if hasattr(weights, 'cpu'):
+                                weights_data = weights.cpu().detach().numpy().tolist()
+                            else:
+                                weights_data = weights
+                            if head_idx is not None and len(weights_data) > head_idx:
+                                weights_data = weights_data[head_idx]
+                            return {"attention": weights_data}
+                        else:
+                            return {"error": f"Attention for layer {layer_idx} is None (hook may not have captured)"}
+                    else:
+                        actual_layers = len(engine._captured_attention)
+                        return {"error": f"Layer index {layer_idx} out of range. Engine has {actual_layers} layers."}
+                # Check engine's get_attention_weights method
+                elif hasattr(engine, 'get_attention_weights'):
+                    return engine.get_attention_weights(layer_idx, head_idx)
+                # Check model's _last_attention_weights (set by forward)
+                elif hasattr(model, '_last_attention_weights') and model._last_attention_weights is not None:
+                    if 0 <= layer_idx < len(model._last_attention_weights):
+                        weights = model._last_attention_weights[layer_idx]
+                        if hasattr(weights, 'cpu'):
+                            weights_data = weights.cpu().detach().numpy().tolist()
+                        else:
+                            weights_data = weights
+                        if head_idx is not None and len(weights_data) > head_idx:
+                            weights_data = weights_data[head_idx]
+                        return {"attention": weights_data}
+                    else:
+                        return {"error": f"Layer index {layer_idx} out of range. Model has {len(model._last_attention_weights) if model._last_attention_weights else 0} layers."}
+                # Check model's last_attention_weights (for MahjongTransformer)
+                elif hasattr(model, 'last_attention_weights') and model.last_attention_weights is not None:
                     if 0 <= layer_idx < len(model.last_attention_weights):
                         weights = model.last_attention_weights[layer_idx]
                         if hasattr(weights, 'cpu'):
