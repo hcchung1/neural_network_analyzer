@@ -10,13 +10,14 @@ const LayerSlider: React.FC<LayerSliderProps> = ({ maxLayer, currentLayer, onCha
   return (
     <div style={{ marginBottom: '16px' }}>
       <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-        Layer: {currentLayer}
+        Encoder Block: {currentLayer} <small style={{ color: '#868e96', fontWeight: 400 }}>(0–{maxLayer})</small>
       </label>
       <input
         type="range"
         min={0}
         max={maxLayer}
         value={currentLayer}
+        aria-label={`Encoder block 0 through ${maxLayer}`}
         onChange={(e) => onChange(Number(e.target.value))}
         style={{ width: '100%' }}
       />

@@ -121,6 +121,33 @@ class TransformerModelEngine:
     def model_class_name(self) -> str:
         return self._model_class_name
 
+    def get_input_schema(self) -> Dict[str, Any] | None:
+        """Return the dense feature tensor contract exposed by the loaded model."""
+        if self._model is None:
+            return None
+
+        seq_len = getattr(self._model, "seq_len", None)
+        feature_dim = getattr(self._model, "_expected_feature_dim", None)
+        if feature_dim is None:
+            feature_dim = getattr(self._model, "input_features", None)
+        if not isinstance(seq_len, int) or not isinstance(feature_dim, int):
+            return None
+        if seq_len <= 0 or feature_dim <= 0:
+            return None
+
+        return {
+            "dtype": "float32",
+            "rank": 3,
+            "batch_size": 1,
+            "seq_len": seq_len,
+            "feature_dim": feature_dim,
+            "shape": [1, seq_len, feature_dim],
+            "accepted_json_shapes": [
+                [seq_len, feature_dim],
+                [1, seq_len, feature_dim],
+            ],
+        }
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -130,6 +157,64 @@ class TransformerModelEngine:
             return False
         import torch
         return torch.cuda.is_available()
+
+    @staticmethod
+    def _configure_input_projection_from_state_dict(model: Any, state_dict: Any) -> None:
+        """Align the model instance's input projection with checkpoint weight shapes."""
+        if not isinstance(state_dict, dict):
+            return
+
+        proj_init_weight = state_dict.get("proj_init.weight")
+        proj_act_weight = state_dict.get("proj_act.weight")
+        input_projection_weight = state_dict.get("input_projection.weight")
+
+        if proj_init_weight is not None and proj_act_weight is not None:
+            import torch.nn as nn
+
+            d_model = int(proj_init_weight.shape[0])
+            init_dim = int(proj_init_weight.shape[1])
+            act_dim = int(proj_act_weight.shape[1])
+            feature_dim = max(init_dim, act_dim)
+            cols = int(getattr(model, "cols", 34))
+            token_mode = "multiply" if cols > 0 and act_dim % cols == 0 else "add"
+
+            if hasattr(model, "input_projection"):
+                delattr(model, "input_projection")
+            model.proj_init = nn.Linear(init_dim, d_model, bias=False)
+            model.proj_act = nn.Linear(act_dim, d_model, bias=False)
+            model.F_INIT = init_dim
+            if token_mode == "multiply":
+                model.F_ACT = act_dim
+                model.F_PAD = feature_dim
+            else:
+                model.F_ACT_ADD = act_dim
+                model.F_PAD_ADD = feature_dim
+            model.token_mode = token_mode
+            model.use_heter_tokens = True
+            model._act_feature_dim = act_dim
+            model._expected_feature_dim = feature_dim
+            model.input_features = feature_dim
+            model.input_shape = (int(model.seq_len), feature_dim)
+            print(
+                "[TransformerModelEngine] Configured checkpoint input projection: "
+                f"mode={token_mode}, init_dim={init_dim}, act_dim={act_dim}, "
+                f"feature_dim={feature_dim}"
+            )
+            return
+
+        if input_projection_weight is not None:
+            import torch.nn as nn
+
+            d_model = int(input_projection_weight.shape[0])
+            feature_dim = int(input_projection_weight.shape[1])
+            for attribute in ("proj_init", "proj_act"):
+                if hasattr(model, attribute):
+                    delattr(model, attribute)
+            model.input_projection = nn.Linear(feature_dim, d_model, bias=False)
+            model.token_mode = None
+            model.use_heter_tokens = False
+            model.input_features = feature_dim
+            model.input_shape = (int(model.seq_len), feature_dim)
 
     # ------------------------------------------------------------------
     # Model loading
@@ -259,6 +344,7 @@ class TransformerModelEngine:
                     self._model = MahjongTransformer(**kwargs)
                 else:
                     self._model = MahjongTransformer()
+                self._configure_input_projection_from_state_dict(self._model, state_dict)
                 
                 # Load state dict with strict=False and handle mismatches
                 state_dict_to_load = None
@@ -476,6 +562,32 @@ class TransformerModelEngine:
                 tensor = input_data.to(self._device)
                 if not torch.is_floating_point(tensor):
                     tensor = tensor.float()
+
+            if tensor.ndim == 2:
+                tensor = tensor.unsqueeze(0)
+            if tensor.ndim != 3:
+                return {
+                    "error": (
+                        "Input feature tensor must have rank 3 [batch, seq_len, feature_dim] "
+                        f"or rank 2 [seq_len, feature_dim]; received shape {list(tensor.shape)}"
+                    )
+                }
+
+            input_schema = self.get_input_schema()
+            if input_schema is not None:
+                expected_seq_len = input_schema["seq_len"]
+                expected_feature_dim = input_schema["feature_dim"]
+                if tensor.shape[0] != 1:
+                    return {
+                        "error": f"Visualization accepts batch size 1; received {tensor.shape[0]}"
+                    }
+                if tensor.shape[1] != expected_seq_len or tensor.shape[2] != expected_feature_dim:
+                    return {
+                        "error": (
+                            f"Input feature shape mismatch: expected [1, {expected_seq_len}, "
+                            f"{expected_feature_dim}], received {list(tensor.shape)}"
+                        )
+                    }
 
             # Register attention hooks before forward pass
             self._register_attention_hooks()

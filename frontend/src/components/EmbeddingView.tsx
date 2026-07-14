@@ -3,10 +3,10 @@ import React from 'react'
 interface EmbeddingViewProps {
   embedding: number[] | null
   projected?: { x: number; y: number }[] | null
-  highlightIndex?: number
+  tokenIndex?: number
 }
 
-const EmbeddingView: React.FC<EmbeddingViewProps> = ({ embedding, projected, highlightIndex = 0 }) => {
+const EmbeddingView: React.FC<EmbeddingViewProps> = ({ embedding, projected, tokenIndex = 0 }) => {
   if (!embedding) {
     return <div style={{ padding: '16px', color: '#888' }}>No embedding data</div>
   }
@@ -21,27 +21,24 @@ const EmbeddingView: React.FC<EmbeddingViewProps> = ({ embedding, projected, hig
 
   return (
     <div style={{ padding: '16px' }}>
-      <h3>Embedding Vector</h3>
+      <h3 style={{ marginBottom: 4 }}>Embedding Vector</h3>
+      <small style={{ color: '#6c757d' }}>
+        Token {tokenIndex} · input projection into d_model, before positional/meta encoding and Encoder Block 0
+      </small>
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          height: '200px',
-          gap: '1px',
-          marginTop: '12px',
-          overflowX: 'auto',
-        }}
+        className="embedding-chart"
       >
         {embedding.map((val, idx) => (
           <div
             key={idx}
-            title={`Dim ${idx}: ${val.toFixed(4)}`}
+            className="embedding-bar"
+            tabIndex={0}
+            data-tooltip={`Dimension ${idx} · ${val.toPrecision(10)}`}
+            aria-label={`Embedding dimension ${idx}: ${val.toPrecision(10)}`}
             style={{
-              flex: '1 0 4px',
               height: `${(Math.abs(val) / (maxVal || 1)) * 100}%`,
               backgroundColor:
-                idx === highlightIndex ? '#ff6b6b' : val > 0 ? '#4dabf7' : '#ffa94d',
-              minHeight: '2px',
+                val > 0 ? '#4dabf7' : '#ffa94d',
             }}
           />
         ))}
@@ -55,8 +52,8 @@ const EmbeddingView: React.FC<EmbeddingViewProps> = ({ embedding, projected, hig
                 key={idx}
                 cx={((point.x + 1) / 2) * 400}
                 cy={300 - ((point.y + 1) / 2) * 300}
-                r={idx === highlightIndex ? 6 : 3}
-                fill={idx === highlightIndex ? '#ff6b6b' : '#4dabf7'}
+                r={3}
+                fill={'#4dabf7'}
                 opacity={0.7}
               />
             ))}

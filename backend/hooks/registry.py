@@ -32,6 +32,8 @@ class HookRegistry:
     def __init__(self, max_cache_size: int = 100) -> None:
         self._handles: List[Any] = []
         self._cache: OrderedDict[str, Any] = OrderedDict()
+        self._last_input: Any = None
+        self._layer_inputs: Dict[int, Any] = {}
         self._model: Any = None
         self._max_cache_size = max_cache_size
         self._session_id: str = str(uuid.uuid4())[:8]
@@ -51,6 +53,15 @@ class HookRegistry:
         self.unregister_all()
         self._model = model
         self._cache.clear()
+
+        transformer_layers = getattr(model, "transformer_layers", None)
+        if transformer_layers is not None:
+            for layer_idx, module in enumerate(transformer_layers):
+                handle = module.register_forward_pre_hook(
+                    self._make_layer_input_hook(layer_idx)
+                )
+                self._handles.append(handle)
+                print(f"[HookRegistry] Layer-input hook registered on transformer_layers.{layer_idx}")
 
         target_layers = layers or ["embedding", "attention", "ffn", "output"]
         
@@ -94,6 +105,8 @@ class HookRegistry:
             handle.remove()
         self._handles.clear()
         self._cache.clear()
+        self._last_input = None
+        self._layer_inputs.clear()
         self._memory_usage_mb = 0.0
 
     # ------------------------------------------------------------------
@@ -103,8 +116,24 @@ class HookRegistry:
         """Clear cached features to free memory."""
         with self._lock:
             self._cache.clear()
+            self._last_input = None
+            self._layer_inputs.clear()
             self._memory_usage_mb = 0.0
         print("[HookRegistry] Cache cleared")
+
+    def set_input(self, input_data: Any) -> None:
+        """Store the exact tensor used by the latest forward pass."""
+        if not _TORCH_AVAILABLE:
+            self._last_input = input_data
+            return
+        if isinstance(input_data, torch.Tensor):
+            tensor = input_data.detach().float().cpu()
+        else:
+            tensor = torch.as_tensor(input_data, dtype=torch.float32).cpu()
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0)
+        with self._lock:
+            self._last_input = tensor
 
     def _check_memory_limit(self) -> None:
         """Check if cache exceeds memory limit and evict oldest entries."""
@@ -132,6 +161,58 @@ class HookRegistry:
     # ------------------------------------------------------------------
     # Data retrieval
     # ------------------------------------------------------------------
+    def get_input_features(self, batch_idx: int, token_idx: int) -> Dict[str, Any]:
+        """Return raw model input for one token from the latest forward pass."""
+        with self._lock:
+            tensor = self._last_input
+            if tensor is None:
+                return {"error": "No cached input. Run a forward pass first."}
+            if not hasattr(tensor, "shape") or len(tensor.shape) != 3:
+                return {"error": "Cached input does not have shape [batch, seq, features]."}
+            if not (0 <= batch_idx < tensor.shape[0]) or not (0 <= token_idx < tensor.shape[1]):
+                return {
+                    "error": (
+                        f"Input index out of range: batch={batch_idx}, token={token_idx}, "
+                        f"shape={list(tensor.shape)}"
+                    )
+                }
+            return {"input": tensor[batch_idx, token_idx, :].numpy().tolist()}
+
+    def get_layer_input(self, layer_idx: int, batch_idx: int, token_idx: int) -> Dict[str, Any]:
+        """Return one token's hidden state immediately before an encoder block."""
+        with self._lock:
+            value = self._layer_inputs.get(layer_idx)
+            if value is None:
+                return {
+                    "error": (
+                        f"Layer input {layer_idx} is not cached. Run a forward pass with hooks registered first."
+                    )
+                }
+
+            branch = None
+            if isinstance(value, tuple):
+                # split_keep models carry attack/defense branches. Use attack as
+                # the primary visualization and report the branch explicitly.
+                value = value[0]
+                branch = "attack"
+            if not hasattr(value, "shape") or len(value.shape) != 3:
+                return {"error": f"Layer {layer_idx} input has unsupported shape."}
+            if not (0 <= batch_idx < value.shape[0]) or not (0 <= token_idx < value.shape[1]):
+                return {
+                    "error": (
+                        f"Layer input index out of range: batch={batch_idx}, token={token_idx}, "
+                        f"shape={list(value.shape)}"
+                    )
+                }
+            result = {
+                "vector": value[batch_idx, token_idx, :].cpu().numpy().tolist(),
+                "dimension": int(value.shape[-1]),
+                "layer_idx": layer_idx,
+            }
+            if branch is not None:
+                result["branch"] = branch
+            return result
+
     def get_features(self, batch_idx: int, token_idx: Optional[int], layer_idx: Optional[int] = None) -> Dict[str, Any]:
         """Retrieve cached features for a specific token."""
         if not self._cache:
@@ -178,6 +259,18 @@ class HookRegistry:
     def get_embedding(self, batch_idx: int, token_idx: int) -> Dict[str, Any]:
         """Get embedding vector for a specific token."""
         with self._lock:
+            # Heterogeneous-token models project init token 0 and action tokens
+            # 1..N through separate modules and therefore separate hook tensors.
+            if token_idx == 0 and "proj_init" in self._cache:
+                tensor = self._cache["proj_init"]
+                if hasattr(tensor, "shape") and len(tensor.shape) == 2:
+                    return {"embedding": tensor[batch_idx, :].flatten().cpu().numpy().tolist()}
+            if token_idx > 0 and "proj_act" in self._cache:
+                tensor = self._cache["proj_act"]
+                action_idx = token_idx - 1
+                if hasattr(tensor, "shape") and len(tensor.shape) == 3 and action_idx < tensor.shape[1]:
+                    return {"embedding": tensor[batch_idx, action_idx, :].flatten().cpu().numpy().tolist()}
+
             for key, tensor in self._cache.items():
                 # Match various embedding-related keys
                 if any(k in key.lower() for k in ["embedding", "embed", "proj_init", "proj_act", "input_projection"]):
@@ -283,28 +376,43 @@ class HookRegistry:
     # get_embedding is already defined above (lines 178-209)
 
     def get_output(self) -> Dict[str, Any]:
-        """Get final model output including logits and softmax probabilities."""
+        """Get final model output with probability semantics matching its head width."""
         with self._lock:
-            for key, tensor in self._cache.items():
-                # Match various output-related keys (including fc, output, final)
-                if any(k in key.lower() for k in ["output", "fc_out", "final", "fc"]):
-                    if hasattr(tensor, "cpu"):
-                        logits = tensor.cpu().numpy()
+            preferred = ("tenpai_classifier", "classifier", "fc_out", "logits", "output", "final")
+            matched = [
+                (key, tensor) for key, tensor in self._cache.items()
+                if any(name in key.lower() for name in preferred)
+            ]
+            for _, tensor in reversed(matched):
+                if hasattr(tensor, "cpu"):
+                    logits = tensor.cpu().numpy()
+                    output_dim = int(logits.shape[-1]) if logits.ndim else 1
+                    if output_dim == 1:
+                        import numpy as np
+                        positive = 1.0 / (1.0 + np.exp(-logits))
+                        probs = np.concatenate((1.0 - positive, positive), axis=-1)
+                        output_type = "binary_logit"
+                    else:
                         probs = self._softmax(logits)
-                        return {
-                            "logits": logits.tolist(),
-                            "probabilities": probs.tolist()
-                        }
+                        output_type = "multiclass_logits"
+                    return {
+                        "logits": logits.tolist(),
+                        "probabilities": probs.tolist(),
+                        "output_type": output_type,
+                        "positive_class_index": 1 if output_dim in (1, 2) else None,
+                        "decision_threshold": 0.5,
+                    }
             # If no output found, return the last cached tensor as fallback
             if self._cache:
                 last_key = list(self._cache.keys())[-1]
                 last_tensor = self._cache[last_key]
                 if hasattr(last_tensor, "cpu"):
                     logits = last_tensor.cpu().numpy()
-                    probs = self._softmax(logits)
                     return {
                         "logits": logits.tolist(),
-                        "probabilities": probs.tolist()
+                        "probabilities": None,
+                        "output_type": "unknown",
+                        "warning": f"No recognized output head was captured; fallback cache key: {last_key}",
                     }
             return {"error": "Output not found in cache"}
 
@@ -323,6 +431,22 @@ class HookRegistry:
             # Auto-clear cache if too large
             if len(self._cache) > self._max_cache_size:
                 self._evict_oldest()
+        return hook
+
+    def _make_layer_input_hook(self, layer_idx: int):
+        def hook(module, inputs):
+            if not inputs:
+                return
+            value = inputs[0]
+            if isinstance(value, tuple):
+                cached = tuple(
+                    item.detach().cpu() if hasattr(item, "detach") else item
+                    for item in value
+                )
+            else:
+                cached = value.detach().cpu() if hasattr(value, "detach") else value
+            with self._lock:
+                self._layer_inputs[layer_idx] = cached
         return hook
 
     @staticmethod

@@ -16,6 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.model import router as model_router
 from api.visualize import router as viz_router
 from api.training import router as training_router
+from api.csv_reader import router as csv_reader_router
+from api.binary_samples import router as binary_samples_router
+from api.visualize_chat import router as visualize_chat_router
 from model_engine.transformer_model import get_model_engine
 from hooks.registry import HookRegistry
 
@@ -53,6 +56,9 @@ app.add_middleware(
 app.include_router(model_router, prefix="/api/model", tags=["model"])
 app.include_router(viz_router, prefix="/api/visualize", tags=["visualize"])
 app.include_router(training_router, prefix="/api/training", tags=["training"])
+app.include_router(csv_reader_router, prefix="/api/csv_reader", tags=["csv_reader"])
+app.include_router(binary_samples_router, prefix="/api/binary_samples", tags=["binary_samples"])
+app.include_router(visualize_chat_router, prefix="/api/visualize_chat", tags=["visualize_chat"])
 
 
 @app.get("/health")
@@ -94,8 +100,33 @@ async def websocket_visualize(websocket: WebSocket):
                 model = engine.model
                 model_meta['seq_len'] = getattr(model, 'seq_len', 49)
                 model_meta['input_features'] = getattr(model, 'input_features', None)
-                model_meta['n_layers'] = getattr(model, 'n_layers', None)
+                transformer_layers = getattr(model, 'transformer_layers', None)
+                model_meta['n_layers'] = (
+                    len(transformer_layers)
+                    if transformer_layers is not None
+                    else getattr(model, 'n_layers', None)
+                )
                 model_meta['d_model'] = getattr(model, 'd_model', None)
+                model_meta['input_schema'] = engine.get_input_schema()
+                output_head = getattr(model, 'tenpai_classifier', None)
+                output_dim = getattr(output_head, 'out_features', None)
+                if output_dim is None:
+                    cnn_head = getattr(model, 'cnn2d_head', None)
+                    linear_layers = [
+                        module for module in cnn_head.modules()
+                        if hasattr(module, 'out_features')
+                    ] if cnn_head is not None else []
+                    output_dim = getattr(linear_layers[-1], 'out_features', None) if linear_layers else None
+                if isinstance(output_dim, int) and output_dim > 0:
+                    model_meta['output_schema'] = {
+                        'output_type': 'binary_logit' if output_dim == 1 else 'multiclass_logits',
+                        'class_names': (
+                            ['not_tenpai', 'tenpai'] if output_dim in (1, 2)
+                            else [f'class_{index}' for index in range(output_dim)]
+                        ),
+                        'positive_class_index': 1 if output_dim in (1, 2) else None,
+                        'decision_threshold': 0.5,
+                    }
             await websocket.send_json({"action": "load_model", "result": result, "model_meta": model_meta})
         except Exception as e:
             traceback.print_exc()
@@ -158,6 +189,8 @@ async def websocket_visualize(websocket: WebSocket):
             return
 
         try:
+            registry.clear_cache()
+            registry.set_input(input_data)
             result = engine.forward(input_data)
             # After forward, also return cached features from hooks
             token_idx = msg.get("token_idx", 0)
@@ -201,10 +234,9 @@ async def websocket_visualize(websocket: WebSocket):
                 if registry is None:
                     await _send_error("get_token_features", "HookRegistry not initialized")
                     continue
-                data = registry.get_features(
+                data = registry.get_input_features(
                     msg.get("batch_idx", 0),
-                    msg.get("token_idx"),
-                    msg.get("layer_idx")
+                    msg.get("token_idx", 0),
                 )
                 await websocket.send_json({"action": "get_token_features", "data": data})
 
@@ -225,6 +257,17 @@ async def websocket_visualize(websocket: WebSocket):
                     print(f"[ERROR] get_token_embedding failed: {e}")
                     traceback.print_exc()
                     await _send_error("get_token_embedding", str(e))
+
+            elif action == "get_layer_input":
+                if registry is None:
+                    await _send_error("get_layer_input", "HookRegistry not initialized")
+                    continue
+                data = registry.get_layer_input(
+                    msg.get("layer_idx", 0),
+                    msg.get("batch_idx", 0),
+                    msg.get("token_idx", 0),
+                )
+                await websocket.send_json({"action": "get_layer_input", "data": data})
 
             elif action == "get_attention":
                 if registry is None:
