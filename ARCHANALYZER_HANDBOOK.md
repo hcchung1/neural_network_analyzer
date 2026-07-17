@@ -99,6 +99,7 @@ ArchAnalyzer/
 
 - 前端 URL：`ws(s)://{host}/ws/visualize`（`App.tsx` + `vite` proxy `/ws`）
 - 側欄若長期顯示 **`WS: connecting`**：多半是 backend 未啟動、port 不對、或 proxy 未轉發 WebSocket
+- 開發模式保留 React `StrictMode`。`useWebSocket` cleanup 必須以個別 `WebSocket` instance 是否仍為 `wsRef.current` 判斷是否重連；不可用跨 socket 共用的 manual-close flag。否則 StrictMode 關閉測試連線後，舊連線的延遲 `onclose` 會誤排 reconnect，形成多條幽靈連線，log 會反覆出現 `accepted`／`Client disconnected`，並讓頁面看似一直重新啟動。
 
 **模型**：
 
@@ -254,7 +255,9 @@ ArchAnalyzer/
 - 手動按 **重新掃描索引** 才遞迴掃描後續新增的 `.csv/.zip`；SQLite 位於 `backend/data/csv_reader_index.sqlite3`，已由 `.gitignore` 排除。
 - 搜尋同時比對 relative path 與 filename，預設最多顯示 40 筆；點選結果只寫入 CSV Reader 的 path input，不會自動 open。
 - SQLite 的 files table 與 `last_scanned_at` metadata 會跨瀏覽器刷新與 backend process 保留。CSV Reader mount 時呼叫 status API 還原「檔案數 + 最後掃描時間」，不再以當次 React state 判斷索引是否存在；因此已建索引刷新後不會錯誤顯示「尚未讀取索引」。
+- `output_index/scan`、status/search、CSV open/page/close 都包含同步 filesystem、SQLite 或 CSV I/O，route 必須使用一般 `def`，讓 FastAPI 放進 thread pool；若寫成 `async def` 卻直接執行同步掃描，大型 output tree／CSV 會堵住 event loop，連帶讓 WebSocket 與其他 API 看似卡死。索引重建另以 process-local lock 拒絕同時重複掃描。
 - 搜尋結果 dropdown 有獨立 open state。點擊搜尋區域外（包含 Filter、分頁或 table）、按 Esc、修改 query、選取結果或搜尋失敗時都會收起；outside-pointer 與 keyboard listener 只在 dropdown 開啟時註冊，關閉或 component unmount 時清理。
+- 2026-07-16 驗證：目前 `Transformer/output` 重建為 1,974 筆，直接掃描約 1.20 秒；持久化 status 的筆數／timestamp 一致，重複掃描 guard 正常，backend `py_compile`、frontend TypeScript 與 `git diff --check` 通過。
 - 2026-07-12 驗證：既有 SQLite status 在未重掃下回傳 1,919 筆與持久化 `last_scanned_at`，獨立 search 回傳相同 timestamp；`python -m py_compile main.py api/csv_reader.py`、`npx tsc --noEmit`、Vite production build 與 `git diff --check` 通過。
 
 ### 從 CSV Reader 加入模型／訓練成果
@@ -342,6 +345,7 @@ npm run dev   # 預設 port 3001，proxy 到 8080
 | CSV output 快速搜尋 | 新增固定根目錄 SQLite index、手動重掃與 query；結果只回填 path input |
 | CSV 索引刷新後顯示未讀取 | 新增 persisted status API；Reader mount 時從 SQLite 還原筆數與最後掃描時間 |
 | CSV 索引結果遮住 Filter | 結果清單加入獨立 open state，點擊外部、Esc、修改 query 或選取結果時自動關閉 |
+| CSV 建立索引時卡住 | 將同步 filesystem／SQLite／CSV 工作改由 FastAPI thread pool 執行；索引掃描加上重複執行 guard，避免阻塞 event loop 與並行重建 |
 | Binary Sample Search 位置與 sample feature | 從左側欄移至主內容 Custom Feature 上方；相容 sample 顯示 Tenhou 盤面後，同步把 2D feature JSON 填入 Custom Feature 並 forward |
 | Binary sample dense shape 轉換 | 依 checkpoint seq_len 重新 pack action tokens；New_Add compact init sidecar 還原成 dense init，真實 sample 驗證 `[25,986]` storage 可產生 `[49,12308]` model input |
 | Current Tenhou Board 拖曳卡頓 | 改用 Pointer Events + pointer capture + iframe overlay；RAF 直接更新右欄 DOM width，放開時才提交 React state |
@@ -357,6 +361,7 @@ npm run dev   # 預設 port 3001，proxy 到 8080
 | Analysis Chat 可信度 | 改為 backend decode → LLM blind board assessment → deterministic model/oracle comparison；修正 sigmoid/softmax、valid_len、target seat、prompt isolation、輸入限制與 HTTP 錯誤分類 |
 | Tenhou Board iframe 切換 | 加入 `key={boardUrl}` 使 hash-only src 變動強制重建 iframe |
 | Load Sample 與 forward 不同步 | WS send 改 `wsRef`；run_forward 前 clear_cache；載入樣本清空 viz state；forward 錯誤顯示於 UI |
+| 網頁反覆重連／像是重啟 | WebSocket lifecycle 改以連線 instance ownership 判斷；StrictMode 舊 socket 關閉後不再建立幽靈 reconnect |
 | Token / Layer 向量語意與版面 | Raw Input 只顯示所選 token 並可收合；新增 checkpoint `d_model` 對齊的 Layer Input Vector；修正六層 slider 為 0–5；三個向量 panel 全寬且右側按鈕避開 scrollbar |
 
 ---
@@ -379,4 +384,4 @@ npm run dev   # 預設 port 3001，proxy 到 8080
 
 ---
 
-*最後更新：2026-07-13（含所選 token Raw Input 收合、Layer Input Vector、六層 slider、full-width vector panels 與右側按鈕 scrollbar 避讓）。*
+*最後更新：2026-07-16（修正 StrictMode WebSocket 幽靈重連，以及 CSV／索引同步 I/O 阻塞 event loop）。*

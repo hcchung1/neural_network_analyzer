@@ -9,6 +9,7 @@ import csv
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -44,6 +45,7 @@ _SESSION_TEMP_ROOT = Path(tempfile.gettempdir()) / "archanalyzer_csv_reader"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _OUTPUT_ROOT = (_REPO_ROOT / "Transformer" / "output").resolve()
 _INDEX_PATH = Path(__file__).resolve().parents[1] / "data" / "csv_reader_index.sqlite3"
+_INDEX_SCAN_LOCK = threading.Lock()
 
 
 class OpenCsvRequest(BaseModel):
@@ -202,7 +204,13 @@ def _read_index_metadata(connection: sqlite3.Connection) -> tuple[int, Optional[
 
 
 @router.post("/output_index/scan", response_model=OutputSearchResponse)
-async def scan_output_index() -> OutputSearchResponse:
+def scan_output_index() -> OutputSearchResponse:
+    if not _INDEX_SCAN_LOCK.acquire(blocking=False):
+        return OutputSearchResponse(
+            success=False,
+            root=str(_OUTPUT_ROOT),
+            error="An output index scan is already in progress",
+        )
     try:
         if not _OUTPUT_ROOT.is_dir():
             raise ValueError(f"Transformer output folder not found: {_OUTPUT_ROOT}")
@@ -224,10 +232,12 @@ async def scan_output_index() -> OutputSearchResponse:
         return OutputSearchResponse(success=True, root=str(_OUTPUT_ROOT), indexed_count=len(records), last_scanned_at=scanned_at)
     except Exception as exc:
         return OutputSearchResponse(success=False, root=str(_OUTPUT_ROOT), error=str(exc))
+    finally:
+        _INDEX_SCAN_LOCK.release()
 
 
 @router.get("/output_index/status", response_model=OutputSearchResponse)
-async def get_output_index_status() -> OutputSearchResponse:
+def get_output_index_status() -> OutputSearchResponse:
     """Return persisted index metadata without opening a search result list."""
     try:
         with _connect_index() as connection:
@@ -243,7 +253,7 @@ async def get_output_index_status() -> OutputSearchResponse:
 
 
 @router.get("/output_index/search", response_model=OutputSearchResponse)
-async def search_output_index(query: str = "", limit: int = 40) -> OutputSearchResponse:
+def search_output_index(query: str = "", limit: int = 40) -> OutputSearchResponse:
     try:
         with _connect_index() as connection:
             count, scanned_at = _read_index_metadata(connection)
@@ -360,7 +370,7 @@ def _image_payload(session_id: str, session: CsvSession) -> list[dict[str, str]]
 
 
 @router.post("/open", response_model=OpenCsvResponse)
-async def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
+def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
     try:
         path = _safe_abs_path(request.path)
         if not os.path.isfile(path):
@@ -409,7 +419,7 @@ async def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
 
 
 @router.post("/page", response_model=CsvPageResponse)
-async def get_page(request: CsvPageRequest) -> CsvPageResponse:
+def get_page(request: CsvPageRequest) -> CsvPageResponse:
     session = _SESSIONS.get(request.session_id)
     if session is None:
         return CsvPageResponse(success=False, error="Unknown CSV session")
@@ -476,7 +486,7 @@ async def get_image(session_id: str, image_index: int) -> FileResponse:
 
 
 @router.post("/close")
-async def close_session(request: CloseSessionRequest) -> dict[str, Any]:
+def close_session(request: CloseSessionRequest) -> dict[str, Any]:
     session = _SESSIONS.pop(request.session_id, None)
     if session and session.extracted_root:
         try:

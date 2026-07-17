@@ -17,7 +17,6 @@ export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void,
   const [lastMessage, setLastMessage] = useState<unknown>(null)
   const reconnectAttempts = useRef(0)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isManualClose = useRef(false)
   const onMessageRef = useRef(onMessage)
 
   // Update ref when onMessage changes
@@ -30,7 +29,11 @@ export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void,
       setStatus('closed')
       return
     }
-    if (isManualClose.current) return
+    const existingSocket = wsRef.current
+    if (existingSocket && (
+      existingSocket.readyState === WebSocket.CONNECTING ||
+      existingSocket.readyState === WebSocket.OPEN
+    )) return
     if (reconnectAttempts.current >= MAX_RECONNECT_ATTEMPTS) {
       console.error(`[WebSocket] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`)
       setStatus('error')
@@ -62,21 +65,25 @@ export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void,
 
       socket.onclose = (event) => {
         console.log(`[WebSocket] Connection closed (code: ${event.code}, reason: ${event.reason || 'N/A'})`)
+        // Only the socket currently owned by this hook may change status or
+        // schedule a reconnect. A stale socket can close after React StrictMode
+        // has already created its replacement.
+        if (wsRef.current !== socket) return
+        wsRef.current = null
         setStatus('closed')
-        
+
         // Auto-reconnect with exponential backoff
-        if (!isManualClose.current) {
-          const delay = Math.min(
-            BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
-            30000 // Max 30 seconds
-          )
-          reconnectAttempts.current += 1
-          console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})...`)
-          
-          reconnectTimer.current = setTimeout(() => {
-            connect()
-          }, delay)
-        }
+        const delay = Math.min(
+          BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
+          30000 // Max 30 seconds
+        )
+        reconnectAttempts.current += 1
+        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})...`)
+
+        reconnectTimer.current = setTimeout(() => {
+          reconnectTimer.current = null
+          connect()
+        }, delay)
       }
 
       socket.onerror = (error) => {
@@ -93,28 +100,27 @@ export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void,
 
   useEffect(() => {
     if (!enabled) {
-      isManualClose.current = true
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current)
         reconnectTimer.current = null
       }
-      wsRef.current?.close()
+      const socket = wsRef.current
       wsRef.current = null
+      socket?.close()
       setStatus('closed')
       return
     }
 
-    isManualClose.current = false
     connect()
     
     return () => {
-      isManualClose.current = true
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current)
         reconnectTimer.current = null
       }
-      wsRef.current?.close()
+      const socket = wsRef.current
       wsRef.current = null
+      socket?.close()
     }
   }, [connect, enabled])
 
@@ -139,7 +145,9 @@ export function useWebSocket(url: string, onMessage?: (data: WSMessage) => void,
 
   const reconnect = useCallback(() => {
     reconnectAttempts.current = 0
-    isManualClose.current = false
+    const socket = wsRef.current
+    wsRef.current = null
+    socket?.close()
     connect()
   }, [connect])
 
