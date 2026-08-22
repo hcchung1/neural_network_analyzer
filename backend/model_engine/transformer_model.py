@@ -339,6 +339,21 @@ class TransformerModelEngine:
                         kwargs["d_ff"] = d_ff
                 except Exception:
                     pass
+
+                # Multi-class checkpoints encode the class count in the
+                # classifier's output dimension. The model constructor defaults
+                # to a binary head, which cannot load shanten classifier weights.
+                try:
+                    classifier_w = state_dict.get("tenpai_classifier.weight")
+                    if (
+                        classifier_w is not None
+                        and hasattr(classifier_w, "shape")
+                        and len(classifier_w.shape) >= 1
+                        and int(classifier_w.shape[0]) > 2
+                    ):
+                        kwargs["num_classes"] = int(classifier_w.shape[0])
+                except Exception:
+                    pass
                 if kwargs:
                     print(f"[TransformerModelEngine] Inferred model architecture: {kwargs}")
                     self._model = MahjongTransformer(**kwargs)

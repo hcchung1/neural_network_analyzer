@@ -21,9 +21,11 @@ interface TrainingHistoryData {
   valLoss: (number | null)[]
   valAccuracy: (number | null)[]
   valF1: (number | null)[]
+  valAuc: (number | null)[]
   valCopyLoss: (number | null)[]
   valCopyAccuracy: (number | null)[]
   valCopyF1: (number | null)[]
+  valCopyAuc: (number | null)[]
 }
 
 type PhaseName = 'early' | 'mid' | 'late'
@@ -35,6 +37,7 @@ interface PhaseMetrics {
   precision: number | null
   recall: number | null
   f1Score: number | null
+  auc: number | null
   avgProbability: number | null
 }
 
@@ -48,6 +51,7 @@ interface TurnMetricsData {
   precision: (number | null)[]
   recall: (number | null)[]
   f1Score: (number | null)[]
+  auc: (number | null)[]
   predictedPositiveRate: (number | null)[]
   positiveRate: (number | null)[]
 }
@@ -242,47 +246,49 @@ function parseTrainingHistoryCSV(csvText: string): TrainingHistoryData {
     valLoss: [],
     valAccuracy: [],
     valF1: [],
+    valAuc: [],
     valCopyLoss: [],
     valCopyAccuracy: [],
-    valCopyF1: []
+    valCopyF1: [],
+    valCopyAuc: []
   }
 
-  let inHistory = false
-  let headerIdx = -1
+  const historyMarkerIdx = lines.findIndex(line => line.trim() === '[TRAINING_HISTORY]')
+  if (historyMarkerIdx === -1 || historyMarkerIdx + 1 >= lines.length) return data
 
-  for (let i = 0; i < lines.length; i++) {
+  const header = splitCsvLine(lines[historyMarkerIdx + 1].trim())
+  const idx = (name: string) => header.indexOf(name)
+  const epochIdx = idx('epoch')
+  if (epochIdx === -1) return data
+
+  const trainLossIdx = idx('train_loss')
+  const valLossIdx = idx('val_loss')
+  const valAccuracyIdx = idx('val_accuracy')
+  const valF1Idx = idx('val_f1')
+  const valAucIdx = idx('val_auc')
+  const valCopyLossIdx = idx('val_copy_loss')
+  const valCopyAccuracyIdx = idx('val_copy_accuracy')
+  const valCopyF1Idx = idx('val_copy_f1')
+  const valCopyAucIdx = idx('val_copy_auc')
+
+  for (let i = historyMarkerIdx + 2; i < lines.length; i++) {
     const line = lines[i].trim()
-    if (line === '[TRAINING_HISTORY]') {
-      inHistory = true
-      headerIdx = i + 1
-      continue
-    }
-    if (inHistory && i === headerIdx) {
-      continue
-    }
-    if (inHistory && line.length > 0) {
-      const cols = splitCsvLine(line)
-      if (cols.length >= 8) {
-        const epoch = parseInt(cols[0], 10)
-        const trainLoss = parseFloat(cols[2])
-        const valLoss = parseFloat(cols[5])
-        const valAcc = parseFloat(cols[6])
-        const valF1 = parseFloat(cols[7])
-        const valCopyLoss = cols[10] ? parseFloat(cols[10]) : NaN
-        const valCopyAcc = cols[11] ? parseFloat(cols[11]) : NaN
-        const valCopyF1 = cols[12] ? parseFloat(cols[12]) : NaN
-        if (!isNaN(epoch)) {
-          data.epochs.push(epoch)
-          data.trainLoss.push(isNaN(trainLoss) ? null : trainLoss)
-          data.valLoss.push(isNaN(valLoss) ? null : valLoss)
-          data.valAccuracy.push(isNaN(valAcc) ? null : valAcc)
-          data.valF1.push(isNaN(valF1) ? null : valF1)
-          data.valCopyLoss.push(isNaN(valCopyLoss) ? null : valCopyLoss)
-          data.valCopyAccuracy.push(isNaN(valCopyAcc) ? null : valCopyAcc)
-          data.valCopyF1.push(isNaN(valCopyF1) ? null : valCopyF1)
-        }
-      }
-    }
+    if (!line || line.startsWith('[')) break
+
+    const cols = splitCsvLine(line)
+    const epoch = parseNumber(cols[epochIdx])
+    if (epoch === null) continue
+
+    data.epochs.push(epoch)
+    data.trainLoss.push(parseNumber(cols[trainLossIdx]))
+    data.valLoss.push(parseNumber(cols[valLossIdx]))
+    data.valAccuracy.push(parseNumber(cols[valAccuracyIdx]))
+    data.valF1.push(parseNumber(cols[valF1Idx]))
+    data.valAuc.push(parseNumber(cols[valAucIdx]))
+    data.valCopyLoss.push(parseNumber(cols[valCopyLossIdx]))
+    data.valCopyAccuracy.push(parseNumber(cols[valCopyAccuracyIdx]))
+    data.valCopyF1.push(parseNumber(cols[valCopyF1Idx]))
+    data.valCopyAuc.push(parseNumber(cols[valCopyAucIdx]))
   }
 
   return data
@@ -302,6 +308,7 @@ function parsePhaseAnalysisCSV(csvText: string): PhaseAnalysisData | null {
   const precisionIdx = idx('precision')
   const recallIdx = idx('recall')
   const f1Idx = idx('f1_score')
+  const aucIdx = idx('auc')
   const avgProbabilityIdx = idx('avg_probability')
   const data: Partial<PhaseAnalysisData> = {}
 
@@ -317,6 +324,7 @@ function parsePhaseAnalysisCSV(csvText: string): PhaseAnalysisData | null {
       precision: parseNumber(cols[precisionIdx]),
       recall: parseNumber(cols[recallIdx]),
       f1Score: parseNumber(cols[f1Idx]),
+      auc: parseNumber(cols[aucIdx]),
       avgProbability: parseNumber(cols[avgProbabilityIdx])
     }
   }
@@ -331,6 +339,7 @@ function parsePhaseAnalysisCSV(csvText: string): PhaseAnalysisData | null {
       precision: null,
       recall: null,
       f1Score: null,
+      auc: null,
       avgProbability: null
     }
     return acc
@@ -352,6 +361,7 @@ function parseTurnMetricsCSV(csvText: string): TurnMetricsData | null {
   const precisionIdx = idx('precision')
   const recallIdx = idx('recall')
   const f1Idx = idx('f1_score')
+  const aucIdx = idx('auc')
   const predictedPositiveRateIdx = idx('predicted_positive_rate')
   const positiveRateIdx = idx('positive_rate')
 
@@ -363,6 +373,7 @@ function parseTurnMetricsCSV(csvText: string): TurnMetricsData | null {
     precision: [],
     recall: [],
     f1Score: [],
+    auc: [],
     predictedPositiveRate: [],
     positiveRate: []
   }
@@ -378,6 +389,7 @@ function parseTurnMetricsCSV(csvText: string): TurnMetricsData | null {
     data.precision.push(parseNumber(cols[precisionIdx]))
     data.recall.push(parseNumber(cols[recallIdx]))
     data.f1Score.push(parseNumber(cols[f1Idx]))
+    data.auc.push(parseNumber(cols[aucIdx]))
     data.predictedPositiveRate.push(parseNumber(cols[predictedPositiveRateIdx]))
     data.positiveRate.push(parseNumber(cols[positiveRateIdx]))
   }
@@ -406,6 +418,29 @@ function getChartDisplayName(name: string): string {
   return match ? match[0] : name
 }
 
+function restoreHistoryData(data: TrainingHistoryData | null): TrainingHistoryData | null {
+  if (!data) return null
+  const emptyAuc = data.epochs.map(() => null)
+  return {
+    ...data,
+    valAuc: data.valAuc ?? emptyAuc,
+    valCopyAuc: data.valCopyAuc ?? emptyAuc
+  }
+}
+
+function restorePhaseData(data: PhaseAnalysisData | null): PhaseAnalysisData | null {
+  if (!data) return null
+  return PHASES.reduce((restored, phase) => {
+    restored[phase] = { ...data[phase], auc: data[phase]?.auc ?? null }
+    return restored
+  }, {} as PhaseAnalysisData)
+}
+
+function restoreTurnMetrics(data: TurnMetricsData | null): TurnMetricsData | null {
+  if (!data) return null
+  return { ...data, auc: data.auc ?? data.turn.map(() => null) }
+}
+
 function restoreResults(): TrainingResult[] {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
@@ -414,10 +449,11 @@ function restoreResults(): TrainingResult[] {
       if (Array.isArray(parsed)) {
         return parsed.map(result => ({
           ...result,
-          phaseData: result.phaseData ?? null,
-          randomPhaseData: result.randomPhaseData ?? null,
-          turnMetrics: result.turnMetrics ?? null,
-          randomTurnMetrics: result.randomTurnMetrics ?? null
+          data: restoreHistoryData(result.data ?? null),
+          phaseData: restorePhaseData(result.phaseData ?? null),
+          randomPhaseData: restorePhaseData(result.randomPhaseData ?? null),
+          turnMetrics: restoreTurnMetrics(result.turnMetrics ?? null),
+          randomTurnMetrics: restoreTurnMetrics(result.randomTurnMetrics ?? null)
         }))
       }
     }
@@ -1030,6 +1066,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
                 <FullscreenPlot data={createCombinedTraces('valLoss', 'valCopyLoss')} layout={createLayout('Validation Loss (Normal vs Copy)', 'Loss')} />
                 <FullscreenPlot data={createCombinedTraces('valAccuracy', 'valCopyAccuracy')} layout={createLayout('Validation Accuracy (Normal vs Copy)', 'Accuracy')} />
                 <FullscreenPlot data={createCombinedTraces('valF1', 'valCopyF1')} layout={createLayout('Validation F1 Score (Normal vs Copy)', 'F1')} />
+                <FullscreenPlot data={createCombinedTraces('valAuc', 'valCopyAuc')} layout={createLayout('Validation ROC AUC (Normal vs Copy)', 'AUC')} />
               </div>
             </>
           )}
@@ -1040,6 +1077,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
                 <FullscreenPlot data={createPhaseTraces('accuracy')} layout={createPhaseLayout('Phase Accuracy', 'Accuracy', 1)} />
                 <FullscreenPlot data={createPhaseTraces('f1Score')} layout={createPhaseLayout('Phase F1 Score', 'F1', 1)} />
+                <FullscreenPlot data={createPhaseTraces('auc')} layout={createPhaseLayout('Phase ROC AUC', 'AUC', 1)} />
                 <FullscreenPlot data={createPhaseTraces('avgProbability')} layout={createPhaseLayout('Phase Avg Probability / Confidence', 'Avg Probability', 1)} />
                 <FullscreenPlot data={createPhaseTraces('totalSamples')} layout={createPhaseLayout('Phase Sample Count', 'Samples')} />
               </div>
@@ -1053,6 +1091,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
                 <FullscreenPlot data={createTurnMetricTraces('avgProbability')} layout={createLayout('Base vs Random Avg Probability by Turn', 'Avg Probability')} />
                 <FullscreenPlot data={createTurnMetricTraces('accuracy')} layout={createLayout('Base vs Random Accuracy by Turn', 'Accuracy')} />
                 <FullscreenPlot data={createTurnMetricTraces('f1Score')} layout={createLayout('Base vs Random F1 Score by Turn', 'F1')} />
+                <FullscreenPlot data={createTurnMetricTraces('auc')} layout={createLayout('Base vs Random ROC AUC by Turn', 'AUC')} />
                 <FullscreenPlot data={createTurnMetricTraces('positiveRate')} layout={createLayout('Base vs Random Positive Rate by Turn', 'Positive Rate')} />
               </div>
 

@@ -182,10 +182,10 @@ ArchAnalyzer/
 
 ### 圖表
 
-1. **一般訓練曲線**（有 `data` 的結果）
-2. **Phase Analysis**（Base + Random 分色／標籤）
+1. **一般訓練曲線**（有 `data` 的結果，包含 Normal / Copy ROC AUC）
+2. **Phase Analysis**（Base + Random 分色／標籤，支援 CSV 的 `auc` 欄位）
 3. **Base vs Random Turn Metrics**：
-   - 4 張分 metric 折線圖（Avg Probability、Accuracy、F1、Positive Rate）
+   - 5 張分 metric 折線圖（Avg Probability、Accuracy、F1、ROC AUC、Positive Rate）
    - 第 5 張 **整合圖**，仿 `PhaseAnalyzer` 的 `*_base_vs_random_turn_metrics.png`（phase shading 0–24 / 24–40 / 40+、雙 Y 軸、6 條線 + count bar）
 
 ### 顯示名稱
