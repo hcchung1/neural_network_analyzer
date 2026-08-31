@@ -29,43 +29,19 @@ except ImportError:
 _MAHJONG_TRANSFORMER = None
 
 def _try_import_mahjong_transformer():
-    """Try to import MahjongTransformer from the project."""
+    """Try to import MahjongTransformer from internal backend models."""
     global _MAHJONG_TRANSFORMER
     if _MAHJONG_TRANSFORMER is not None:
         return _MAHJONG_TRANSFORMER
-    
-    # Try multiple possible paths
-    possible_roots = [
-        # From ArchAnalyzer root (go up 4 levels from backend/model_engine/)
-        Path(__file__).parent.parent.parent.parent / "Transformer",
-        # From current working directory
-        Path.cwd() / "Transformer",
-        # Absolute path (adjust if needed for your container)
-        Path("/workspace/Study/Mahjong-Hidden-Information-Forecast/Transformer"),
-    ]
-    
-    for root in possible_roots:
-        if root.exists():
-            try:
-                import importlib.util
-                # Add the Transformer directory to sys.path so transformer.py can find utils
-                if str(root) not in sys.path:
-                    sys.path.insert(0, str(root))
-                
-                spec = importlib.util.spec_from_file_location(
-                    "transformer_module", str(root / "transformer.py")
-                )
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules["transformer_module"] = module
-                    spec.loader.exec_module(module)
-                    _MAHJONG_TRANSFORMER = module.MahjongTransformer
-                    print(f"[TransformerModelEngine] Successfully imported MahjongTransformer from {root}")
-                    return _MAHJONG_TRANSFORMER
-            except Exception as e:
-                print(f"[TransformerModelEngine] Failed to import from {root}: {e}")
-                continue
-    
+
+    try:
+        from models.sequence import MahjongTransformer
+        _MAHJONG_TRANSFORMER = MahjongTransformer
+        print("[TransformerModelEngine] Successfully imported MahjongTransformer from models.sequence")
+        return _MAHJONG_TRANSFORMER
+    except Exception as e:
+        print(f"[TransformerModelEngine] Failed to import MahjongTransformer: {e}")
+
     print("[TransformerModelEngine] Could not import MahjongTransformer, using dummy model")
     return None
 
@@ -244,174 +220,16 @@ class TransformerModelEngine:
             return True
 
         try:
-            # Try to import the real MahjongTransformer first
-            MahjongTransformer = _try_import_mahjong_transformer()
-            
-            if MahjongTransformer is not None:
-                print("[TransformerModelEngine] Using real MahjongTransformer")
-                # Inspect checkpoint first to infer correct hyperparameters
-                ckpt = torch.load(path, map_location="cpu")
-                state_dict = ckpt
-                if isinstance(ckpt, dict):
-                    if "model_state_dict" in ckpt:
-                        state_dict = ckpt["model_state_dict"]
-                    elif "state_dict" in ckpt:
-                        state_dict = ckpt["state_dict"]
-                # Infer shapes from checkpoint keys
-                d_model = None
-                seq_len = None
-                try:
-                    pe_shape = state_dict.get("pos_encoding.pe")
-                    if pe_shape is not None and hasattr(pe_shape, "shape"):
-                        seq_len = pe_shape.shape[1]  # e.g. 33
-                        d_model = pe_shape.shape[2]  # e.g. 512
-                    else:
-                        # fallback: inspect proj_init.weight
-                        proj_w = state_dict.get("proj_init.weight")
-                        if proj_w is not None and hasattr(proj_w, "shape"):
-                            d_model = proj_w.shape[0]
-                except Exception:
-                    pass
-                # Build kwargs; allow passing different defaults without changing signature of TransformerModelEngine.load_model
-                kwargs = {}
-                if d_model is not None:
-                    kwargs["d_model"] = d_model
-                if seq_len is not None:
-                    feature_dim = None
-                    # Check for Heterogeneous Tokens (proj_init + proj_act)
-                    proj_init_w = state_dict.get("proj_init.weight")
-                    proj_act_w = state_dict.get("proj_act.weight")
-                    if proj_init_w is not None and proj_act_w is not None:
-                        # Heterogeneous Tokens mode
-                        # proj_init.weight shape: (d_model, F_INIT)
-                        # proj_act.weight shape: (d_model, act_dim)
-                        f_init = proj_init_w.shape[1] if hasattr(proj_init_w, "shape") else 850
-                        act_dim = proj_act_w.shape[1] if hasattr(proj_act_w, "shape") else 58
-                        # input_features should be max(F_INIT, act_dim) to match F_PAD_ADD or F_PAD
-                        feature_dim = max(f_init, act_dim)
-                        print(f"[TransformerModelEngine] Detected Heterogenous Tokens: F_INIT={f_init}, act_dim={act_dim}, input_features={feature_dim}")
-                    else:
-                        # Single projection mode: try to infer from input_projection.weight
-                        proj_w = state_dict.get("input_projection.weight")
-                        if proj_w is not None and hasattr(proj_w, "shape"):
-                            feature_dim = proj_w.shape[1]
-                    if feature_dim is not None:
-                        kwargs["input_shape"] = (seq_len, feature_dim)
-                    else:
-                        kwargs["input_shape"] = (seq_len, None)
-                # Infer n_heads: d_model must be divisible by n_heads.
-                n_heads = None
-                try:
-                    w_q = state_dict.get("transformer_layers.0.attention.w_q.weight")
-                    if w_q is not None and hasattr(w_q, "shape"):
-                        out_dim = w_q.shape[0]  # d_model
-                        in_dim = w_q.shape[1]   # d_model
-                        # For standard MHA, qkv weight is (d_model, d_model)
-                        # head_dim = d_model // n_heads, so n_heads must divide d_model evenly.
-                        # Try common n_heads values: 16, 8, 12, 4, 2, 1
-                        for candidate in [16, 8, 12, 4, 2, 1]:
-                            if d_model is not None and d_model % candidate == 0:
-                                n_heads = candidate
-                                break
-                except Exception:
-                    pass
-                if n_heads is not None:
-                    kwargs["n_heads"] = n_heads
-
-                # Infer n_layers from the number of transformer_layers
-                try:
-                    layer_indices = set()
-                    for k in state_dict.keys():
-                        if k.startswith("transformer_layers."):
-                            parts = k.split(".")
-                            if len(parts) > 1 and parts[1].isdigit():
-                                layer_indices.add(int(parts[1]))
-                    if layer_indices:
-                        kwargs["n_layers"] = max(layer_indices) + 1
-                except Exception:
-                    pass
-
-                # Infer d_ff from feed_forward weight dimensions
-                try:
-                    ff_w = state_dict.get("transformer_layers.0.feed_forward.0.weight")
-                    if ff_w is not None and hasattr(ff_w, "shape"):
-                        d_ff = ff_w.shape[0]
-                        kwargs["d_ff"] = d_ff
-                except Exception:
-                    pass
-
-                # Multi-class checkpoints encode the class count in the
-                # classifier's output dimension. The model constructor defaults
-                # to a binary head, which cannot load shanten classifier weights.
-                try:
-                    classifier_w = state_dict.get("tenpai_classifier.weight")
-                    if (
-                        classifier_w is not None
-                        and hasattr(classifier_w, "shape")
-                        and len(classifier_w.shape) >= 1
-                        and int(classifier_w.shape[0]) > 2
-                    ):
-                        kwargs["num_classes"] = int(classifier_w.shape[0])
-                except Exception:
-                    pass
-                if kwargs:
-                    print(f"[TransformerModelEngine] Inferred model architecture: {kwargs}")
-                    self._model = MahjongTransformer(**kwargs)
-                else:
-                    self._model = MahjongTransformer()
-                self._configure_input_projection_from_state_dict(self._model, state_dict)
-                
-                # Load state dict with strict=False and handle mismatches
-                state_dict_to_load = None
-                if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-                    state_dict_to_load = ckpt["model_state_dict"]
-                elif isinstance(ckpt, dict) and "state_dict" in ckpt:
-                    state_dict_to_load = ckpt["state_dict"]
-                elif isinstance(ckpt, dict):
-                    state_dict_to_load = ckpt
-                else:
-                    self._model = ckpt
-                    self._model_class_name = "MahjongTransformer"
-                    return True
-                
-                # Try strict loading first, fallback to non-strict
-                try:
-                    self._model.load_state_dict(state_dict_to_load, strict=True)
-                    print("[TransformerModelEngine] Model loaded with strict=True")
-                except RuntimeError as e:
-                    print(f"[TransformerModelEngine] Strict loading failed: {e}")
-                    print("[TransformerModelEngine] Attempting non-strict loading...")
-                    missing, unexpected = self._model.load_state_dict(state_dict_to_load, strict=False)
-                    if missing:
-                        print(f"[TransformerModelEngine] Missing keys: {missing}")
-                    if unexpected:
-                        print(f"[TransformerModelEngine] Unexpected keys: {unexpected}")
-                    print("[TransformerModelEngine] Non-strict loading completed")
-                self._model_class_name = "MahjongTransformer"
-            else:
-                # Fall back to dummy model
-                print("[TransformerModelEngine] Using dummy model (MahjongTransformer not found)")
-                self._model = self._create_dummy_model()
-                checkpoint = torch.load(path, map_location=device)
-                if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                    self._model.load_state_dict(checkpoint["model_state_dict"])
-                elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-                    self._model.load_state_dict(checkpoint["state_dict"])
-                elif isinstance(checkpoint, dict) and "model" in checkpoint:
-                    self._model = checkpoint["model"]
-                elif isinstance(checkpoint, dict):
-                    self._model.load_state_dict(checkpoint)
-                else:
-                    self._model = checkpoint
-                self._model_class_name = type(self._model).__name__
-            self._model.to(device)
-            self._model.eval()
+            from model_engine.compatibility import load_checkpoint_strictly
+            model, spec, loaded_phase = load_checkpoint_strictly(path, device=device)
+            self._model = model
+            self._model_class_name = spec.name
             self._is_loaded = True
-            print(f"[TransformerModelEngine] Model loaded to {device}")
+            print(f"[TransformerModelEngine] Model '{spec.name}' strictly loaded to {device} (phase: {loaded_phase})")
             return True
-
         except Exception as e:
-            print(f"[TransformerModelEngine] Failed to load model: {e}")
+            print(f"[TransformerModelEngine] Strict loading via compatibility layer failed: {e}")
+            # Fallback to direct load or dummy model if explicit path failed
             self._is_loaded = False
             return False
 

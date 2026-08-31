@@ -3,7 +3,13 @@
 
 import ast
 import sys
+import unittest
 from pathlib import Path
+
+# Add backend directory to sys.path
+backend_dir = Path(__file__).resolve().parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 def check_syntax(filepath: Path) -> bool:
     """Check Python syntax of a file."""
@@ -32,25 +38,32 @@ def verify_imports(filepath: Path) -> bool:
 
 def main():
     print("Scanning ArchAnalyzer backend...\n")
-    backend_dir = Path(__file__).parent
-    
+
     py_files = list(backend_dir.rglob('*.py'))
     if not py_files:
         print("No Python files found!", file=sys.stderr)
         sys.exit(1)
-    
+
     all_ok = True
     for f in py_files:
         if 'pycache' in str(f):
             continue
         all_ok &= check_syntax(f)
         verify_imports(f)
-    
+
+    # Run compatibility unit tests
+    print("\nRunning unit tests...")
+    loader = unittest.TestLoader()
+    suite = loader.discover(str(backend_dir), pattern="test_*.py")
+    runner = unittest.TextTestRunner(verbosity=1)
+    test_result = runner.run(suite)
+    all_ok &= test_result.wasSuccessful()
+
     print(f"\n{'='*40}")
     if all_ok:
-        print("✓ All backend files syntax OK")
+        print("✓ All backend files syntax OK and tests passed!")
     else:
-        print("✗ Some files have syntax errors!")
+        print("✗ Some files have syntax errors or tests failed!")
         sys.exit(1)
 
 if __name__ == '__main__':
