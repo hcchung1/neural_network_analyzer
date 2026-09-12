@@ -151,7 +151,7 @@ export function ModelComparison() {
         ] as Array<[number, string]>,
         hovertemplate: "Row %{y}, Col %{x}<br>Δ: %{z:.5f}<extra></extra>",
         showscale: true,
-        colorbar: { title: "A − B", thickness: 12 },
+        colorbar: { title: { text: "A − B" }, thickness: 12 },
       }
     : null;
 
