@@ -21,3 +21,52 @@ frontend/coverage/
 **/*.log
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
+node_modules
+**/.*
+
+# Next.js auto-generated
+next-env.d.ts
+
+# Local data
+data/
+
+# One-off scripts
+update_explore.py
+
+# Node / Next.js
+  /node_modules/
+  /.next/
+  /next-env.d.ts
+  *.tsbuildinfo
+
+  # Python
+  /.venv/
+  **/__pycache__/
+  **/*.py[cod]
+  .pytest_cache/
+  .mypy_cache/
+  .ruff_cache/
+
+  # Environment
+  .env
+  .env.*
+  !.env.example
+
+  # Runtime artifacts
+  **/*.log
+  /backend/data/*.sqlite3
+  /backend/data/*.sqlite3-*
+
+  # Local data
+  /data/
+
+  # Playwright artifacts
+  /.playwright-mcp/
+  /data-page-*.png
+
+  # Local Codex runtime directories
+  /.agents/
+  /.codex/
+
+  # One-off local script
+  /update_explore.py

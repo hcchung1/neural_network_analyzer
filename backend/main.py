@@ -6,6 +6,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.sidecar import sidecar_router
+from api.visualize_chat import router as visualize_chat_router
+from api.binary_samples import router as binary_samples_router
+from api.csv_reader import router as csv_reader_router
+from api.training import router as training_router
+from api.compare import router as compare_router
 from model_engine.transformer_model import get_model_engine
 
 app = FastAPI(
@@ -25,6 +30,11 @@ app.add_middleware(
 
 # Internal Sidecar APIs only
 app.include_router(sidecar_router)
+app.include_router(visualize_chat_router, prefix="/internal/v1/assistant")
+app.include_router(binary_samples_router, prefix="/internal/v1/legacy/binary_samples")
+app.include_router(csv_reader_router, prefix="/internal/v1/legacy/csv_reader")
+app.include_router(training_router, prefix="/internal/v1/legacy/training")
+app.include_router(compare_router, prefix="/internal/v1")
 
 @app.get("/health")
 async def health_check():

@@ -1,8 +1,10 @@
-import React from "react";
+"use client";
+import React, { useState } from "react";
 import Link from "next/link";
-import { Compass, FolderKanban, Database, GitCompare, Settings, Activity } from "lucide-react";
+import { Compass, FolderKanban, Database, GitCompare, Settings, Activity, ChevronLeft, ChevronRight } from "lucide-react";
 
 export function Sidebar({ activeTab }: { activeTab: string }) {
+  const [isExpanded, setIsExpanded] = useState(true);
   const navItems = [
     { id: "explore", label: "Explore", icon: Compass, href: "/explore" },
     { id: "runs", label: "Runs", icon: FolderKanban, href: "/runs" },
@@ -12,16 +14,18 @@ export function Sidebar({ activeTab }: { activeTab: string }) {
   ];
 
   return (
-    <aside className="w-64 bg-slate-900 text-slate-200 border-r border-slate-800 flex flex-col h-screen select-none">
-      <div className="p-4 border-b border-slate-800 flex items-center space-x-3">
-        <Activity className="w-6 h-6 text-blue-500" />
-        <div>
-          <h1 className="font-bold text-sm text-slate-100 tracking-wide">ArchAnalyzer</h1>
-          <p className="text-xs text-slate-400">Research Workbench</p>
-        </div>
+    <aside className={`${isExpanded ? "w-64" : "w-16"} transition-all duration-300 ease-in-out bg-slate-900 text-slate-200 border-r border-slate-800 flex flex-col h-screen select-none`}>
+      <div className={`p-4 border-b border-slate-800 flex items-center ${isExpanded ? "space-x-3" : "justify-center"}`}>
+        <Activity className="w-6 h-6 text-blue-500 shrink-0" />
+        {isExpanded && (
+          <div className="overflow-hidden">
+            <h1 className="font-bold text-sm text-slate-100 tracking-wide truncate">ArchAnalyzer</h1>
+            <p className="text-xs text-slate-400 truncate">Research Workbench</p>
+          </div>
+        )}
       </div>
 
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="flex-1 py-4 px-2 space-y-2 overflow-x-hidden">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -29,28 +33,34 @@ export function Sidebar({ activeTab }: { activeTab: string }) {
             <Link
               key={item.id}
               href={item.href}
-              className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              className={`flex items-center ${isExpanded ? "space-x-3 px-3" : "justify-center px-0"} py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 isActive
                   ? "bg-blue-600 text-white shadow-sm"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
               }`}
             >
-              <Icon className="w-4 h-4" />
-              <span>{item.label}</span>
+              <Icon className="w-5 h-5 shrink-0" />
+              {isExpanded && <span className="truncate">{item.label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      <div className="p-3 border-t border-slate-800 text-xs text-slate-500">
-        Precision Light UI v0.2
+      <div className="p-3 border-t border-slate-800 flex items-center justify-center">
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="text-slate-400 hover:text-slate-100 bg-slate-800/50 hover:bg-slate-700/50 p-1.5 rounded-lg transition-colors"
+          title={isExpanded ? "Collapse Sidebar" : "Expand Sidebar"}
+        >
+          {isExpanded ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+        </button>
       </div>
     </aside>
   );
 }
 
 export function TopContextBar({
-  modelName = "transOriginal",
+  modelName = "Not Loaded",
   device = "cpu",
   sidecarHealthy = true,
 }: {

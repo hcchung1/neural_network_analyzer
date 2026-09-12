@@ -64,6 +64,15 @@ class ActivationsResponse(BaseModel):
     session_id: str
     activations: Dict[str, Any]
 
+class AnalyzeActivationsRequest(BaseModel):
+    input_data: Optional[List[Any]] = None
+    use_dummy_input: bool = True
+
+class AnalyzeActivationsResponse(BaseModel):
+    status: str
+    torchlens_history: Optional[Dict[str, Any]] = None
+
+
 
 # --- Session Store (In-Memory with TTL & Eviction) ---
 class SessionStore:
@@ -205,9 +214,10 @@ async def internal_create_session(req: CreateSessionRequest):
         # Capture basic probes
         activations: Dict[str, Any] = {}
         if "attention" in req.requested_probes or not req.requested_probes:
-            attn_res = engine.get_attention_weights(0)
-            if "attention" in attn_res:
-                activations["attention_layer_0"] = attn_res["attention"]
+            for i in range(len(getattr(engine, "_captured_attention", [None]*4))):
+                attn_res = engine.get_attention_weights(i)
+                if "attention" in attn_res:
+                    activations[f"attention_layer_{i}"] = attn_res["attention"]
 
         session_id = _SESSION_STORE.create(
             model_name=engine.model_class_name,
@@ -271,6 +281,51 @@ async def internal_get_activations(session_id: str):
         activations=sess["activations"],
     )
 
+
+@sidecar_router.post("/analyze_activations", response_model=AnalyzeActivationsResponse)
+async def analyze_activations(req: AnalyzeActivationsRequest):
+    engine = get_model_engine()
+    
+    if not engine.is_loaded or engine.model is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=SidecarErrorEnvelope(error=SidecarErrorBody(
+                code="MODEL_NOT_LOADED",
+                message="No model is loaded for Torchlens analysis"
+            )).model_dump()
+        )
+
+    # Process input data
+    input_tensor = None
+    if not req.use_dummy_input and req.input_data:
+        import torch
+        try:
+            input_tensor = torch.tensor(req.input_data, dtype=torch.float32).to(engine.device)
+            if input_tensor.ndim == 2:
+                input_tensor = input_tensor.unsqueeze(0)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=SidecarErrorEnvelope(error=SidecarErrorBody(
+                    code="INVALID_INPUT_TENSOR",
+                    message=str(e)
+                )).model_dump()
+            )
+
+    result = engine.analyze_with_torchlens(input_tensor=input_tensor)
+    if "error" in result:
+         raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=SidecarErrorEnvelope(error=SidecarErrorBody(
+                code="TORCHLENS_ANALYSIS_FAILED",
+                message=result["error"]
+            )).model_dump()
+        )
+
+    return AnalyzeActivationsResponse(
+        status=result["status"],
+        torchlens_history=result.get("torchlens_history")
+    )
 
 @sidecar_router.delete("/sessions/{session_id}")
 async def internal_delete_session(session_id: str):

@@ -1,24 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { forwardToSidecar } from "@/lib/sidecar-client";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages } = body;
-
-    const lastMessage = messages[messages.length - 1]?.content || "";
-
-    // Simulate assistant contextual reply
-    const reply = `I have received your message regarding the current analysis context: "${lastMessage}". Let me analyze the current tensor heatmap and metrics... (This is a placeholder response for the Analysis Assistant API).`;
-
-    return NextResponse.json({
-      role: "assistant",
-      content: reply,
-      timestamp: new Date().toISOString()
-    });
+    return await forwardToSidecar("/assistant/chat", "POST", body);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: { code: "ASSISTANT_ERROR", message: err.message } },
-      { status: 500 }
-    );
+    return new Response(JSON.stringify({ error: { code: "SERVER_ERROR", message: err.message } }), { status: 500 });
   }
 }

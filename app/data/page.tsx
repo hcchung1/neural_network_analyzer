@@ -2,7 +2,7 @@
 
 import React from "react";
 import { Sidebar, TopContextBar } from "@/components/Navigation";
-import { DataSourceLibrary } from "@/features/sources/DataSourceLibrary";
+import CsvReaderComponent from "@/features/sources/CsvReaderComponent";
 
 export default function DataPage() {
   return (
@@ -11,7 +11,11 @@ export default function DataPage() {
       <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
         <TopContextBar />
         <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-          <DataSourceLibrary />
+          <CsvReaderComponent 
+            onBack={() => {}} 
+            onAddModel={() => {}} 
+            onAddTrainingResults={() => {}} 
+          />
         </main>
       </div>
     </div>

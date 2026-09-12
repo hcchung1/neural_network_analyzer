@@ -314,7 +314,8 @@ def load_checkpoint_strictly(
         raise RuntimeError("MODEL_BUILD_FAILED: Transformer model factory is unavailable")
 
     if not checkpoint_path or checkpoint_path.strip() in ("", "dummy"):
-        spec = ModelBuildSpec(name="transTest", input_shape=(25, 12308), num_classes=2, normalization="ln")
+        name_for_dummy = manifest_spec.get("name", "transTest") if manifest_spec else "transTest"
+        spec = ModelBuildSpec(name=name_for_dummy, input_shape=(25, 12308), num_classes=2, normalization="ln")
         model = build_model(spec)
         model.to(device)
         model.eval()

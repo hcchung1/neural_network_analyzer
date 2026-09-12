@@ -330,8 +330,11 @@ class TransformerModelEngine:
         class _DummyTransformer(nn.Module):
             def __init__(self, vocab_size: int = 128, d_model: int = 256, n_layers: int = 4, n_heads: int = 8):
                 super().__init__()
-                self.embedding = nn.Embedding(vocab_size, d_model)
+                # For testing Real model takes [batch, seq, feature_dim] floats
+                self.embedding = nn.Linear(d_model, d_model)
                 self.pos_encoding = nn.Parameter(torch.randn(1, 512, d_model) * 0.02)
+                self.seq_len = 128
+                self.input_features = d_model
                 self.d_model = d_model
                 self.n_heads = n_heads
                 self.n_layers = n_layers
@@ -457,8 +460,83 @@ class TransformerModelEngine:
         except Exception as e:
             return {"error": str(e)}
 
+
+    # ------------------------------------------------------------------
+    # Torchlens integration
+    # ------------------------------------------------------------------
+    def generate_dummy_input(self) -> Any:
+        if not _TORCH_AVAILABLE or self._model is None:
+            return None
+        import torch
+
+        schema = self.get_input_schema()
+        if schema:
+            seq_len = schema["seq_len"]
+            feature_dim = schema["feature_dim"]
+            return torch.randn(1, seq_len, feature_dim, device=self._device)
+        
+        # Fallback if no schema is dynamically constructed
+        seq_len = getattr(self._model, "seq_len", 128)
+        feature_dim = getattr(self._model, "input_features", 256)
+        if isinstance(seq_len, int) and isinstance(feature_dim, int):
+            return torch.randn(1, seq_len, feature_dim, device=self._device)
+        return torch.randn(1, 128, 256, device=self._device)
+
+    def analyze_with_torchlens(self, input_tensor: Optional[Any] = None) -> Dict[str, Any]:
+        if not self.is_loaded or self._model is None:
+            return {"error": "Model not loaded"}
+
+        try:
+            import torchlens as tl
+            import torch
+        except ImportError:
+            return {"error": "torchlens or torch not installed"}
+
+        if input_tensor is None:
+            input_tensor = self.generate_dummy_input()
+            if input_tensor is None:
+                return {"error": "Could not generate dummy input tensor"}
+
+        # Put model in eval mode and perform torchlens logging
+        self._model.eval()
+        try:
+            with torch.no_grad():
+                model_history = tl.log_forward_pass(self._model, input_tensor, layers_to_save='all', vis_opt='none')
+            
+            # Serialize the captured torchlens history securely
+            serialized_history = []
+            
+            # Use unique layers to avoid duplicates (keys map to the same objects)
+            seen_operations = set()
+            for k, v in model_history.layer_dict_all_keys.items():
+                if v.operation_num in seen_operations:
+                    continue
+                seen_operations.add(v.operation_num)
+                
+                serialized_history.append({
+                    "layer_label": getattr(v, "layer_label", "Unknown"),
+                    "layer_type": getattr(v, "layer_type", "Unknown"),
+                    "tensor_shape": list(getattr(v, "tensor_shape", [])) if getattr(v, "tensor_shape") else None,
+                    "func_name": getattr(v, "func_applied_name", "Unknown"),
+                    "module": getattr(v, "containing_module_origin", "Unknown"),
+                    "operation_num": getattr(v, "operation_num", -1),
+                    "is_input": getattr(v, "is_input_layer", False),
+                    "is_output": getattr(v, "is_output_layer", False)
+                })
+                
+            # Optional: sort by operation_num
+            serialized_history.sort(key=lambda x: x["operation_num"])
+            
+            # Wrap in dictionary
+            serialized_history_out = {"layers": serialized_history}
+            
+            return {"status": "ok", "torchlens_history": serialized_history_out}
+        except Exception as e:
+            return {"error": f"Torchlens parsing failed: {str(e)}"}
+
     # ------------------------------------------------------------------
     # Public API for attention retrieval
+
     # ------------------------------------------------------------------
     def get_attention_weights(self, layer_idx: int, head_idx: Optional[int] = None) -> Dict[str, Any]:
         """Get attention weights for a specific layer.

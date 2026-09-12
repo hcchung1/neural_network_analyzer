@@ -39,3 +39,12 @@ export const SessionSummarySchema = z.object({
   output_sample: z.array(z.number()),
   probes_captured: z.array(z.string()),
 });
+
+// --- Compare models ---
+
+export const CompareModelsRequestSchema = z.object({
+  checkpoint_a: z.string().min(1, "Checkpoint A path is required"),
+  checkpoint_b: z.string().min(1, "Checkpoint B path is required"),
+  device: z.string().default("cpu"),
+  attention_layers: z.array(z.number()).optional(),
+});
