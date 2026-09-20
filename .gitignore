@@ -32,6 +32,9 @@ data/
 
 # One-off scripts
 update_explore.py
+test-results/
+playwright-report/
+*.tsbuildinfo
 
 # Node / Next.js
   /node_modules/

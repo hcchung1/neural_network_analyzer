@@ -11,6 +11,7 @@ const TokenSelector: React.FC<TokenSelectorProps> = ({ tokenCount, selectedToken
     <div style={{ marginBottom: '16px' }}>
       <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>Token Index</label>
       <select
+        aria-label="Token Index"
         value={selectedToken}
         onChange={(e) => onSelect(Number(e.target.value))}
         style={{ padding: '8px', borderRadius: '4px', minWidth: '120px' }}

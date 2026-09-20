@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:collaboration": "playwright test tests/collaboration.spec.cjs"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -22,6 +23,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^20.14.12",
     "@types/plotly.js": "^2.29.0",
     "@types/react": "^18.3.3",

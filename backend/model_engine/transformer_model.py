@@ -60,13 +60,17 @@ class TransformerModelEngine:
 
     _instance: "TransformerModelEngine | None" = None
 
-    def __new__(cls) -> "TransformerModelEngine":
+    def __new__(cls, *, isolated: bool = False) -> "TransformerModelEngine":
+        if isolated:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            return instance
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self) -> None:
+    def __init__(self, *, isolated: bool = False) -> None:
         if self._initialized:
             return
         self._model: Any = None
@@ -432,6 +436,7 @@ class TransformerModelEngine:
                 output = self._model(tensor)
             
             # Collect attention weights from attention modules (for real MahjongTransformer)
+            captured_by_hooks = self._captured_attention
             self._captured_attention = []
             for name, module in self._model.named_modules():
                 module_type = type(module).__name__
@@ -443,7 +448,8 @@ class TransformerModelEngine:
                         self._captured_attention.append(None)
                 elif module_type == 'MultiheadAttention':
                     # PyTorch native MHA - weights captured by hooks
-                    pass
+                    index = len(self._captured_attention)
+                    self._captured_attention.append(captured_by_hooks[index] if index < len(captured_by_hooks) else None)
             
             # Capture attention weights from model attributes (for dummy model compatibility)
             if hasattr(self._model, 'last_attention_weights') and self._model.last_attention_weights is not None:

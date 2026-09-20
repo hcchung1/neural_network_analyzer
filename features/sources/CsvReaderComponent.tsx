@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { copyToClipboard } from '@/lib/clipboard'
 
 interface CsvSession {
   id: string
@@ -594,7 +595,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
 
   const copyText = async (text: string, message: string) => {
     try {
-      await navigator.clipboard.writeText(text)
+      await copyToClipboard(text)
       setStatus(message)
     } catch (error) {
       setStatus(`Copy failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1234,11 +1235,11 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
         )}
       </div>
 
-      {!focusMode && activeSession && (
+      {activeSession && (
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <button onClick={copySelectedCell} disabled={!selectedCell}>Copy Cell</button>
           <button onClick={copySelectedRow} disabled={selectedRowIndex === null}>Copy Row As CSV / Ctrl+C</button>
-          {activeSession.images.length > 0 && <button onClick={() => { setSidePaneOpen(true); setSideMode('image') }}>Show Training PNGs ({activeSession.images.length})</button>}
+          {!focusMode && activeSession.images.length > 0 && <button onClick={() => { setSidePaneOpen(true); setSideMode('image') }}>Show Training PNGs ({activeSession.images.length})</button>}
         </div>
       )}
     </div>

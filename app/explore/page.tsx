@@ -10,8 +10,13 @@ import TokenSelector from "@/components/visualizations/TokenSelector";
 import LayerInputView from "@/components/visualizations/LayerInputView";
 import EmbeddingView from "@/components/visualizations/EmbeddingView";
 import OutputView from "@/components/visualizations/OutputView";
+import { useWorkspace } from "@/features/collaboration/useWorkspace";
+import { WorkspacePanel } from "@/features/collaboration/WorkspacePanel";
+import { ViewState } from "@/lib/collaboration-types";
 
 export default function ExplorePage() {
+  const workspace = useWorkspace();
+  const appliedAnalysis = useRef("");
   const [checkpointPath, setCheckpointPath] = useState("");
   const [dummyModelType, setDummyModelType] = useState("transTest");
   const [modelLoaded, setModelLoaded] = useState(false);
@@ -44,9 +49,64 @@ export default function ExplorePage() {
   const [chatLoading, setChatLoading] = useState(false);
   const endOfMessagesRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const room = workspace.room;
+    if (!room) {
+      if (appliedAnalysis.current) {
+        setModelLoaded(false); setModelName(""); setModelInputSchema(null);
+        setAttentionMap({}); setOutput(null); setCapabilities(null);
+        setTokenCount(16); setMaxLayer(3); setSelectedToken(0); setCurrentLayer(0);
+      }
+      appliedAnalysis.current = ""; return;
+    }
+    const key = `${room.id}:${room.analysisRevision}`;
+    if (appliedAnalysis.current === key) return;
+    appliedAnalysis.current = key;
+    const a = room.analysis;
+    setModelLoaded(!!a.model); setModelName(a.modelName || "");
+    setDevice(a.model?.device || "cpu"); setTargetDevice(a.model?.device || "cpu");
+    setCheckpointPath(a.model?.checkpoint_path === "dummy" ? "" : a.model?.checkpoint_path || "");
+    setDummyModelType(String(a.model?.manifest_spec?.name || "transTest"));
+    setCapabilities(a.capabilities || null); setModelInputSchema(a.inputSchema || null);
+    setAttentionMap(a.attention); setOutput(a.output.length ? a.output : null);
+    setTokenCount(a.tokenCount); setMaxLayer(a.maxLayer);
+    setSelectedToken(0); setCurrentLayer(0);
+    setInputFeatures(null); setEmbedding(null); setLayerInput(null);
+    setModelOutputSchema(a.output.length ? {
+      output_type: a.output.length === 1 ? "binary_logit" : "multiclass_logits",
+      class_names: a.output.length <= 2 ? ["not_tenpai", "tenpai"] : a.output.map((_, i) => String(i)),
+      positive_class_index: a.output.length <= 2 ? 1 : null, decision_threshold: 0.5,
+    } : null);
+  }, [workspace.room]);
+
+  useEffect(() => {
+    if (workspace.room && workspace.following && !workspace.isHost) {
+      setSelectedToken(workspace.room.view.token); setCurrentLayer(workspace.room.view.layer);
+    }
+  }, [workspace.following, workspace.isHost, workspace.room?.view.token, workspace.room?.view.layer, workspace.room?.analysisRevision]);
+
+  useEffect(() => {
+    if (workspace.isHost && workspace.room) {
+      setSelectedToken(workspace.room.view.token); setCurrentLayer(workspace.room.view.layer);
+      workspace.setFollowing(false);
+    }
+  }, [workspace.isHost]);
+
+  const navigateView = (view: ViewState) => {
+    workspace.setFollowing(false);
+    setSelectedToken(view.token); setCurrentLayer(view.layer);
+    if (workspace.isHost && workspace.room) void workspace.act({ type: "view", view, analysisRevision: workspace.room.analysisRevision });
+  };
+
   const handleLoadModel = async () => {
     setLoading(true);
     setError(null);
+    if (workspace.room) {
+      await workspace.act({ type: "load", analysisRevision: workspace.room.analysisRevision, model: {
+        checkpoint_path: checkpointPath || "dummy", manifest_spec: !checkpointPath ? { name: dummyModelType } : undefined, device: targetDevice,
+      } });
+      setLoading(false); return;
+    }
     try {
       const res = await fetch("/api/v1/models/load", {
         method: "POST",
@@ -84,6 +144,10 @@ export default function ExplorePage() {
   const handleBinaryFeature = async (feature: number[][], tokenCountVal: number, meta?: Record<string, unknown>) => {
     setLoading(true);
     setError(null);
+    if (workspace.room) {
+      await workspace.act({ type: "infer", analysisRevision: workspace.room.analysisRevision, input: feature, tokenCount: tokenCountVal, sample: meta });
+      setLoading(false); return;
+    }
     try {
       const res = await fetch("/api/v1/inference-sessions", {
         method: "POST",
@@ -164,6 +228,7 @@ export default function ExplorePage() {
 
         <div className="flex-1 flex overflow-hidden">
           <main className="flex-1 overflow-y-auto p-6 space-y-6">
+            <WorkspacePanel workspace={workspace} view={{ token: selectedToken, layer: currentLayer }} onNavigate={navigateView} />
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-900 flex items-center space-x-2">
@@ -171,7 +236,7 @@ export default function ExplorePage() {
                   <span>Model Control & Source Selection</span>
                 </h2>
               </div>
-              <div className="flex space-x-3">
+              <fieldset disabled={!!workspace.room && (!workspace.isHost || workspace.room.busy) || loading} className="flex flex-wrap gap-3 min-w-0">
                 <select
                   value={targetDevice}
                   onChange={(e) => setTargetDevice(e.target.value)}
@@ -209,9 +274,9 @@ export default function ExplorePage() {
                   >
                   <span>{loading ? "Loading..." : "Load Model"}</span>
                 </button>
-              </div>
+              </fieldset>
               {error && <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700">{error}</div>}
-              {modelLoaded && (
+              {modelLoaded && (!workspace.room || workspace.isHost) && !workspace.room?.busy && !loading && (
                 <BinarySampleLoader
                   modelShape={modelInputSchema}
                   onFeatureLoaded={handleBinaryFeature}
@@ -223,8 +288,8 @@ export default function ExplorePage() {
             <div className="grid grid-cols-1 gap-6">
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-3">
                  <div className="flex space-x-4 mb-4">
-                    <TokenSelector tokenCount={tokenCount} selectedToken={selectedToken} onSelect={setSelectedToken} />
-                    <LayerSlider maxLayer={maxLayer} currentLayer={currentLayer} onChange={setCurrentLayer} />
+                    <TokenSelector tokenCount={tokenCount} selectedToken={selectedToken} onSelect={token => navigateView({ token, layer: currentLayer })} />
+                    <LayerSlider maxLayer={maxLayer} currentLayer={currentLayer} onChange={layer => navigateView({ token: selectedToken, layer })} />
                  </div>
               </div>
 

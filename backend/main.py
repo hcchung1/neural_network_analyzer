@@ -11,6 +11,7 @@ from api.binary_samples import router as binary_samples_router
 from api.csv_reader import router as csv_reader_router
 from api.training import router as training_router
 from api.compare import router as compare_router
+from api.collaboration import router as collaboration_router
 from model_engine.transformer_model import get_model_engine
 
 app = FastAPI(
@@ -35,6 +36,7 @@ app.include_router(binary_samples_router, prefix="/internal/v1/legacy/binary_sam
 app.include_router(csv_reader_router, prefix="/internal/v1/legacy/csv_reader")
 app.include_router(training_router, prefix="/internal/v1/legacy/training")
 app.include_router(compare_router, prefix="/internal/v1")
+app.include_router(collaboration_router)
 
 @app.get("/health")
 async def health_check():
