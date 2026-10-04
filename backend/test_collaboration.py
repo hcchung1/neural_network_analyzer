@@ -33,11 +33,25 @@ class CollaborationTests(unittest.TestCase):
         request = AnalysisRequest(model=LoadModelRequest(checkpoint_path="missing-test-checkpoint"))
         with patch("api.collaboration.load_checkpoint_strictly", side_effect=ValueError("invalid")):
             from fastapi import HTTPException
-            from api.collaboration import _compute_lock
+            from model_engine.resources import compute_gate
             with self.assertRaises(HTTPException):
                 analyze(request)
-            self.assertTrue(_compute_lock.acquire(blocking=False))
-            _compute_lock.release()
+            with compute_gate.slot():
+                pass
+
+    def test_collaboration_and_compare_share_bounded_admission(self):
+        from fastapi import HTTPException
+        from model_engine.resources import ComputeGate
+        from api.compare import compare_models, CompareRequest
+        gate = ComputeGate(max_waiting=0)
+        with patch('api.collaboration.compute_gate', gate), patch('api.compare.compute_gate', gate), gate.slot():
+            for operation in (
+                lambda: analyze(AnalysisRequest(model=LoadModelRequest(checkpoint_path='unused'))),
+                lambda: compare_models(CompareRequest(checkpoint_a='unused', checkpoint_b='unused')),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    operation()
+                self.assertEqual(caught.exception.status_code, 503)
 
 
 if __name__ == "__main__":

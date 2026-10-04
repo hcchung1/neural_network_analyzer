@@ -73,3 +73,8 @@ playwright-report/
 
   # One-off local script
   /update_explore.py
+
+# Keep backend index implementation tracked; runtime data remains ignored.
+!/backend/data/
+/backend/data/*
+!/backend/data/*.py

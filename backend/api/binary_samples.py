@@ -14,9 +14,11 @@ from typing import Any, Optional
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+from backend.data.binary_index import BinaryRecordIndex
 
 router = APIRouter()
 _PACK_CONFIG_LOCK = threading.Lock()
+_BINARY_INDEX = BinaryRecordIndex()
 
 
 class SearchRequest(BaseModel):
@@ -52,16 +54,8 @@ def _bin_files(directory: Path) -> list[Path]:
 
 
 def _read_info_line(info_path: Path, line_number: int) -> str:
-    """Read a zero-based info.txt line without retaining the huge file in memory."""
-    if not info_path.is_file():
-        return ""
-    with info_path.open("rb") as stream:
-        for current, raw_line in enumerate(stream):
-            if current == line_number:
-                return raw_line.decode("utf-8", errors="replace").strip()
-            if current > line_number:
-                break
-    return ""
+    """Read one zero-based info.txt line through the persistent offset index."""
+    return _BINARY_INDEX.read_line(info_path, line_number).decode('utf-8', errors='replace').strip()
 
 
 def _tenhou_url(raw_json: str) -> str:
@@ -122,7 +116,7 @@ def _pack_for_model_schema(
 
 
 @router.get("/files")
-async def list_files(directory: str) -> dict[str, Any]:
+def list_files(directory: str) -> dict[str, Any]:
     try:
         root = _safe_directory(directory)
         files = _bin_files(root)
@@ -136,7 +130,7 @@ async def list_files(directory: str) -> dict[str, Any]:
 
 
 @router.post("/search")
-async def search_sample(request: SearchRequest) -> dict[str, Any]:
+def search_sample(request: SearchRequest) -> dict[str, Any]:
     try:
         root = _safe_directory(request.directory)
         files = _bin_files(root)
@@ -149,23 +143,21 @@ async def search_sample(request: SearchRequest) -> dict[str, Any]:
         utils = _utils_module()
         match: tuple[Path, int, int, bytes] | None = None
         for path in files:
-            raw = path.read_bytes()
-            record_size = utils.detect_record_size_from_length(len(raw))
+            record_size = utils.detect_record_size_from_length(path.stat().st_size)
             if not record_size:
-                continue
-            count = len(raw) // record_size
-            indices = range(count)
-            if request.line_number is None and request.record_index is not None:
-                indices = [request.record_index] if request.record_index < count else []
-            for index in indices:
-                start = index * record_size
-                record = raw[start : start + record_size]
-                line_number = int.from_bytes(record[:4], "little", signed=False)
-                if request.line_number is None or line_number == request.line_number:
-                    match = (path, index, record_size, record)
-                    break
-            if match:
-                break
+                raise ValueError(f"Invalid or truncated binary file: {path.name}")
+            if request.line_number is not None:
+                located = _BINARY_INDEX.find_line(path, request.line_number, record_size)
+                if located is None:
+                    continue
+                index, record = located
+            else:
+                index = request.record_index if request.record_index is not None else 0
+                if index >= path.stat().st_size // record_size:
+                    continue
+                record = _BINARY_INDEX.read_record(path, index, record_size)
+            match = (path, index, record_size, record)
+            break
         if match is None:
             raise ValueError("No sample matched the requested line/record")
 

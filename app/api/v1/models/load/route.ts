@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    return forwardToSidecar("/models/load", "POST", parsed.data);
+    return forwardToSidecar("/models/load", "POST", parsed.data, req.headers.get("X-Model-Handle"));
   } catch (err: any) {
     return NextResponse.json(
       {

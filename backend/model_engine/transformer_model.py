@@ -459,9 +459,15 @@ class TransformerModelEngine:
                 ]
                 print(f"[TransformerModelEngine] Captured attention weights from model attribute: {len(self._model._last_attention_weights)} layers")
 
+            if not torch.is_tensor(output) or output.numel() == 0:
+                raise ValueError("Visualization requires a nonempty tensor output")
+            if not torch.isfinite(output).all():
+                raise ValueError("Model output contains non-finite values")
             return {
                 "output_shape": list(output.shape),
-                "output_sample": output[0, :5].cpu().numpy().tolist(),
+                "output_kind": "raw",
+                # Historical field name retained; values are complete, in row-major order.
+                "output_sample": output.detach().cpu().reshape(-1).tolist(),
             }
         except Exception as e:
             return {"error": str(e)}
@@ -544,62 +550,30 @@ class TransformerModelEngine:
     # Public API for attention retrieval
 
     # ------------------------------------------------------------------
-    def get_attention_weights(self, layer_idx: int, head_idx: Optional[int] = None) -> Dict[str, Any]:
-        """Get attention weights for a specific layer.
-        
-        Returns:
-            Dict with 'attention' key containing the weights, or 'error' key.
-        """
-        # Check engine's captured attention first (from hooks)
-        if self._captured_attention and any(w is not None for w in self._captured_attention):
-            if 0 <= layer_idx < len(self._captured_attention):
-                weights = self._captured_attention[layer_idx]
-                if weights is not None:
-                    if hasattr(weights, 'cpu'):
-                        weights_data = weights.cpu().detach().numpy().tolist()
-                    else:
-                        weights_data = weights
-                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
-                        weights_data = weights_data[head_idx]
-                    return {"attention": weights_data}
-                else:
-                    return {"error": f"Attention for layer {layer_idx} is None (hook may not have captured)"}
-            else:
-                actual_layers = len(self._captured_attention)
-                return {"error": f"Layer index {layer_idx} out of range. Engine has {actual_layers} layers."}
-        
-        # Check model's _last_attention_weights (set by forward())
+    def get_attention_tensor(self, layer_idx: int):
+        """Return detached CPU attention without a Python-list round trip."""
+        sources = [self._captured_attention]
         if self._model is not None:
-            if hasattr(self._model, '_last_attention_weights') and self._model._last_attention_weights is not None:
-                if 0 <= layer_idx < len(self._model._last_attention_weights):
-                    weights = self._model._last_attention_weights[layer_idx]
-                    if hasattr(weights, 'cpu'):
-                        weights_data = weights.cpu().detach().numpy().tolist()
-                    else:
-                        weights_data = weights
-                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
-                        weights_data = weights_data[head_idx]
-                    return {"attention": weights_data}
-                else:
-                    actual_layers = len(self._model._last_attention_weights) if self._model._last_attention_weights else 0
-                    return {"error": f"Layer index {layer_idx} out of range. Model has {actual_layers} layers."}
-            
-            # Check model's last_attention_weights (for dummy model)
-            if hasattr(self._model, 'last_attention_weights') and self._model.last_attention_weights is not None:
-                if 0 <= layer_idx < len(self._model.last_attention_weights):
-                    weights = self._model.last_attention_weights[layer_idx]
-                    if hasattr(weights, 'cpu'):
-                        weights_data = weights.cpu().detach().numpy().tolist()
-                    else:
-                        weights_data = weights
-                    if head_idx is not None and isinstance(weights_data, list) and len(weights_data) > head_idx:
-                        weights_data = weights_data[head_idx]
-                    return {"attention": weights_data}
-                else:
-                    actual_layers = len(self._model.last_attention_weights) if self._model.last_attention_weights else 0
-                    return {"error": f"Layer index {layer_idx} out of range. Model has {actual_layers} layers."}
-        
-        return {"error": "No attention weights available. Please run a forward pass first."}
+            sources.extend(getattr(self._model, name, None)
+                           for name in ("_last_attention_weights", "last_attention_weights"))
+        for weights in sources:
+            if weights is not None and len(weights) and any(w is not None for w in weights):
+                if not 0 <= layer_idx < len(weights) or weights[layer_idx] is None:
+                    return None
+                value = weights[layer_idx]
+                if not isinstance(value, torch.Tensor):
+                    value = torch.as_tensor(value)
+                return value.detach().cpu()
+        return None
+
+    def get_attention_weights(self, layer_idx: int, head_idx: Optional[int] = None) -> Dict[str, Any]:
+        """Compatibility list API; handlers reduce tensors before serialization."""
+        weights = self.get_attention_tensor(layer_idx)
+        if weights is None:
+            return {"error": "No attention weights available for this layer. Please run a forward pass first."}
+        if head_idx is not None and weights.ndim and len(weights) > head_idx:
+            weights = weights[head_idx]
+        return {"attention": weights.tolist()}
 
     def _remove_attention_hooks(self) -> None:
         """Remove all registered attention hooks."""
@@ -611,6 +585,11 @@ class TransformerModelEngine:
         """Clear captured attention weights."""
         self._captured_attention = []
         self._remove_attention_hooks()
+        if self._model is not None:
+            for module in self._model.modules():
+                for name in ("last_attention_weights", "_last_attention_weights"):
+                    if hasattr(module, name):
+                        setattr(module, name, None)
 
     def __del__(self):
         """Cleanup hooks on deletion."""

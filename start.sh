@@ -2,6 +2,15 @@
 set -Eeuo pipefail
 
 PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ANALYZER_PYTHON=${ANALYZER_PYTHON:-python3}
+if ! command -v "$ANALYZER_PYTHON" >/dev/null 2>&1; then
+  echo "❌ Python 3.11 or newer is required. Set ANALYZER_PYTHON to an installed interpreter." >&2
+  exit 2
+fi
+if ! "$ANALYZER_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+  echo "❌ Python 3.11 or newer is required. Set ANALYZER_PYTHON to a supported interpreter." >&2
+  exit 2
+fi
 BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
 BACKEND_PORT=${BACKEND_PORT:-8080}
 FRONTEND_HOST=${FRONTEND_HOST:-0.0.0.0}
@@ -11,6 +20,7 @@ NEXT_PID=""
 
 export BACKEND_PORT
 export FRONTEND_PORT
+export PYTHONPATH="$PROJECT_DIR:$PROJECT_DIR/backend${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHON_SIDECAR_URL="http://127.0.0.1:$BACKEND_PORT/internal/v1"
 
 cleanup() {
@@ -82,7 +92,7 @@ echo "🎨 Next.js: http://$FRONTEND_HOST:$FRONTEND_PORT"
 echo "🔥 Starting Python Sidecar..."
 (
   cd "$PROJECT_DIR/backend"
-  exec uvicorn main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+  exec "$ANALYZER_PYTHON" -m uvicorn main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 ) &
 SIDECAR_PID=$!
 

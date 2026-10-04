@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { randomBytes, randomUUID, createHash } from "crypto";
 import fs from "fs";
 import path from "path";
-import { RoomSnapshot, SharedAnalysis, ViewState } from "./collaboration-types";
+import { RoomPoll, RoomSnapshot, SharedAnalysis, ViewState } from "./collaboration-types";
 
 type Member = { id: string; name: string; secret: string; seen: number };
 type Room = Omit<RoomSnapshot, "members" | "busy"> & {
@@ -47,8 +47,12 @@ function snapshot(room: Room): RoomSnapshot {
 function member(room: Room, token: string) {
   const m = room.members.find(m => m.secret === hash(token));
   if (!m) throw new RoomError("加入憑證已失效，請重新加入工作區。", 401);
-  m.seen = Date.now();
-  db().prepare("INSERT OR REPLACE INTO collaboration_presence (room_id, member_id, seen) VALUES (?, ?, ?)").run(room.id, m.id, m.seen);
+  const now = Date.now();
+  if (now - m.seen >= 3000) {
+    db().prepare("INSERT OR REPLACE INTO collaboration_presence (room_id, member_id, seen) VALUES (?, ?, ?)").run(room.id, m.id, now);
+  }
+  // The caller is online immediately even while the persisted heartbeat is throttled.
+  m.seen = now;
   return m;
 }
 function host(room: Room, id: string) {
@@ -73,11 +77,19 @@ export function joinRoom(name: string, id?: string) {
     return { identity: { roomId: room.id, memberId: m.id, token }, room: snapshot(room) };
   })();
 }
-export function getRoom(id: string, token: string) {
+export function getRoom(id: string, token: string, revisions?: { revision?: number; analysisRevision?: number }): RoomPoll {
   return db().transaction(() => {
     const room = read(id);
     member(room, token);
-    return snapshot(room);
+    const result = snapshot(room);
+    if (!revisions) return result;
+    const analysis = revisions.analysisRevision === result.analysisRevision ? {} : { analysis: result.analysis };
+    if (revisions.revision === result.revision) {
+      const { id, revision, analysisRevision, hostId, members, busy } = result;
+      return { id, revision, analysisRevision, hostId, members, busy, unchanged: true, ...analysis };
+    }
+    const { analysis: omitted, ...metadata } = result;
+    return { ...metadata, ...analysis };
   })();
 }
 export function updateRoom(id: string, token: string, action: {

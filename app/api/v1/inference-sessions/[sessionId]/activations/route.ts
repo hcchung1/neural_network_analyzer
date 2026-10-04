@@ -2,5 +2,5 @@ import { NextRequest } from "next/server";
 import { forwardToSidecar } from "@/lib/sidecar-client";
 
 export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
-  return forwardToSidecar(`/sessions/${params.sessionId}/activations`, "GET");
+  return forwardToSidecar(`/sessions/${params.sessionId}/activations`, "GET", undefined, req.headers.get("X-Model-Handle"));
 }

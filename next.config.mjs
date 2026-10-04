@@ -4,6 +4,7 @@ const sidecarBaseUrl = (
 ).replace(/\/$/, "");
 
 const nextConfig = {
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   reactStrictMode: true,
   async rewrites() {
     return [

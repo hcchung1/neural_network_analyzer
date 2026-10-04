@@ -73,6 +73,8 @@ async function run(page, baseURL = 'http://127.0.0.1:3001') {
     // Only the binary-file source is a deterministic fixture. Model loading,
     // inference, room persistence and all collaboration calls use the real server.
     await page.route('**/api/legacy/binary_samples/files?*', route => route.fulfill({ json: { success: true, files: [{ name: 'collaboration-fixture.bin', size: 100 }] } }));
+    await page.getByTitle('Target compute device', { exact: true }).selectOption('cpu');
+    await page.getByTitle('Model architecture', { exact: true }).selectOption('transTest');
     await page.getByRole('button', { name: 'Load Model', exact: true }).click();
     await page.getByLabel('Binary file').waitFor({ timeout: 120000 });
     const loaded = (await request(page)).body;
@@ -88,8 +90,8 @@ async function run(page, baseURL = 'http://127.0.0.1:3001') {
     await page.getByRole('button', { name: 'Load Sample', exact: true }).click();
     await page.getByTestId('shared-sample').waitFor({ timeout: 120000 });
     await guest.getByTestId('shared-sample').waitFor();
-    await page.getByText('Output Probabilities', { exact: true }).waitFor();
-    await guest.getByText('Output Probabilities', { exact: true }).waitFor();
+    await page.getByText('Raw Model Output', { exact: true }).waitFor();
+    await guest.getByText('Raw Model Output', { exact: true }).waitFor();
     const hostResult = (await request(page)).body.analysis;
     const guestResult = (await request(guest)).body.analysis;
     assert.deepEqual(hostResult, guestResult);
@@ -128,12 +130,12 @@ async function run(page, baseURL = 'http://127.0.0.1:3001') {
     await page.getByText('你是主持人', { exact: true }).waitFor();
     await page.reload();
     await page.getByTestId('shared-sample').waitFor();
-    await page.getByText('Output Probabilities', { exact: true }).waitFor();
+    await page.getByText('Raw Model Output', { exact: true }).waitFor();
     await guest.goto(page.url());
     await guest.getByLabel('協作暱稱').fill('Returning Bob');
     await guest.getByRole('button', { name: '加入工作區', exact: true }).click();
     await guest.getByTestId('shared-sample').waitFor();
-    await guest.getByText('Output Probabilities', { exact: true }).waitFor();
+    await guest.getByText('Raw Model Output', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
     await page.setViewportSize({ width: 1600, height: 1200 });
     await page.screenshot({ path: 'test-results/collaboration-success.png', fullPage: true });

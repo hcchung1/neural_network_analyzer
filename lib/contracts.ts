@@ -18,6 +18,9 @@ export const LoadModelRequestSchema = z.object({
 });
 
 export const LoadModelResponseSchema = z.object({
+  model_handle: z.string(),
+  input_schema: z.record(z.any()).nullable(),
+  layer_count: z.number().int().nonnegative(),
   status: z.string(),
   model_name: z.string(),
   phase: z.string().nullable().optional(),
@@ -37,6 +40,7 @@ export const SessionSummarySchema = z.object({
   model_name: z.string(),
   output_shape: z.array(z.number()),
   output_sample: z.array(z.number()),
+  output_kind: z.literal("raw"),
   probes_captured: z.array(z.string()),
 });
 

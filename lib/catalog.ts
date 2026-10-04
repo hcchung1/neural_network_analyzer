@@ -208,6 +208,12 @@ export function listRuns(): any[] {
   return db.prepare('SELECT * FROM runs ORDER BY created_at DESC').all();
 }
 
+export function listRunArtifacts(): any[] {
+  return getDb().prepare(`SELECT artifacts.* FROM artifacts
+    JOIN runs ON runs.run_id = artifacts.run_id
+    ORDER BY runs.created_at DESC, artifacts.rel_path`).all();
+}
+
 export function getRun(runId: string): any {
   const db = getDb();
   const runRow = db.prepare('SELECT * FROM runs WHERE run_id = ?').get(runId);

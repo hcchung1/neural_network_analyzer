@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+from model_engine.resources import compute_gate
 
 from model_engine.compatibility import (
     inspect_checkpoint,
@@ -282,7 +283,12 @@ def _compute_attention_similarity(
 # ---------------------------------------------------------------------------
 
 @router.post("/compare", response_model=CompareResponse)
-async def compare_models(req: CompareRequest):
+def compare_models(req: CompareRequest):
+    with compute_gate.slot():
+        return _compare_models(req)
+
+
+def _compare_models(req: CompareRequest):
     """Compare two model checkpoints: weight deltas and attention similarity."""
     try:
         sd_a, name_a = _load_state_dict(req.checkpoint_a, req.device)

@@ -10,6 +10,8 @@ export type SharedAnalysis = {
   maxLayer: number;
   attention: Record<number, number[][]>;
   output: number[];
+  outputShape?: number[];
+  outputKind?: "raw";
 };
 export type RoomEntry = {
   id: string; author: string; text: string; kind: "chat" | "annotation";
@@ -22,3 +24,10 @@ export type RoomSnapshot = {
   entries: RoomEntry[]; busy: boolean;
 };
 export type RoomIdentity = { roomId: string; memberId: string; token: string };
+
+export type RoomPoll = Pick<RoomSnapshot, "id" | "revision" | "analysisRevision" | "hostId" | "members" | "busy"> & {
+  unchanged?: boolean;
+  view?: ViewState;
+  entries?: RoomEntry[];
+  analysis?: SharedAnalysis;
+};

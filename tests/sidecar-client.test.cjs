@@ -40,3 +40,25 @@ test('successful scans preserve the backend payload', async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), payload);
 });
+
+test('personal model capability is forwarded only when provided', async () => {
+  const requests = [];
+  const forward = loadClient(async (url, options) => {
+    requests.push(options);
+    return Response.json({ status: 'ok' });
+  });
+  await forward('/sessions', 'POST', { input_data: [] }, 'alice-handle');
+  await forward('/health');
+  assert.equal(requests[0].headers['X-Model-Handle'], 'alice-handle');
+  assert.equal(requests[1].headers['X-Model-Handle'], undefined);
+});
+
+test('FastAPI errors retain their code and retry hint for browser recovery', async () => {
+  const forward = loadClient(async () => Response.json({ detail: {
+    error: { code: 'COMPUTE_BUSY', message: 'Busy' },
+  } }, { status: 503, headers: { 'Retry-After': '2' } }));
+  const response = await forward('/sessions', 'POST', {});
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'COMPUTE_BUSY');
+  assert.equal(response.headers.get('Retry-After'), '2');
+});

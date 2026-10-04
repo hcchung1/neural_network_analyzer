@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
+import { mapWithConcurrency } from '@/lib/performance'
+import { readTrainingResults, writeTrainingResults } from '@/lib/training-results-storage'
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false })
 
@@ -473,12 +475,11 @@ function restoreTurnMetrics(data: TurnMetricsData | null): TurnMetricsData | nul
   return { ...data, auc: data.auc ?? data.turn.map(() => null) }
 }
 
-function restoreResults(): TrainingResult[] {
+async function restoreResults(): Promise<TrainingResult[]> {
   try {
     if (typeof window === 'undefined') return []
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      const parsed = JSON.parse(stored)
+    const parsed = await readTrainingResults<TrainingResult>(STORAGE_KEY)
+    if (parsed.length) {
       if (Array.isArray(parsed)) {
         return parsed.map(result => ({
           ...result,
@@ -491,18 +492,10 @@ function restoreResults(): TrainingResult[] {
       }
     }
   } catch (e) {
-    console.error('Failed to restore results from localStorage:', e)
+    console.error('Failed to restore training results:', e)
+    throw e
   }
   return []
-}
-
-function saveResults(results: TrainingResult[]) {
-  try {
-    if (typeof window === 'undefined') return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(results))
-  } catch (e) {
-    console.error('Failed to save results to localStorage:', e)
-  }
 }
 
 interface TrainingResultsPageProps {
@@ -514,19 +507,36 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
   const [results, setResults] = useState<TrainingResult[]>([])
   const [isLoaded, setIsLoaded] = useState(false)
 
+  const pendingPersistence = useRef<TrainingResult[] | null>(null)
+  const persistenceReady = useRef(false)
   useEffect(() => {
-    setResults(restoreResults())
-    setIsLoaded(true)
+    let active = true
+    void restoreResults().then(restored => {
+      if (active) { persistenceReady.current = true; setResults(restored) }
+    })
+      .catch(error => { if (active) setScanError(`Unable to restore training results: ${error.message}`) })
+      .finally(() => { if (active) setIsLoaded(true) })
+    return () => { active = false }
   }, [])
   const [folderInput, setFolderInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (isLoaded) {
-      saveResults(results)
-    }
+    if (!isLoaded || !persistenceReady.current) return
+    pendingPersistence.current = results
+    const timer = setTimeout(() => {
+      pendingPersistence.current = null
+      void writeTrainingResults(STORAGE_KEY, results).catch(error =>
+        setScanError(`Unable to save training results: ${error.message}`))
+    }, 500)
+    return () => clearTimeout(timer)
   }, [results, isLoaded])
+  useEffect(() => () => {
+    if (pendingPersistence.current) {
+      void writeTrainingResults(STORAGE_KEY, pendingPersistence.current).catch(console.error)
+    }
+  }, [])
 
   const scanFolder = async (folderOverride?: string) => {
     const targetFolder = (folderOverride ?? folderInput).trim()
@@ -580,7 +590,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
         })
       })
 
-      for (const file of data.files) {
+      const loadedFiles = await mapWithConcurrency(data.files, 4, async file => {
         try {
           const readResponse = await fetch(`${API_BASE_URL}/api/legacy/training/read_file`, {
             method: 'POST',
@@ -592,15 +602,26 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
 
           if (!readResponse.ok) {
             console.warn(`Failed to read ${file.name}: HTTP ${readResponse.status}`)
-            continue
+            return null
           }
 
           const fileData: ReadFileResponse = await readResponse.json()
           if (!fileData.success) {
             console.warn(`Failed to read ${file.name}: ${fileData.error}`)
-            continue
+            return null
           }
 
+          return { file, fileData }
+        } catch (error) {
+          console.error(`Error reading file ${file.name}:`, error)
+          return null
+        }
+      })
+
+      for (const loaded of loadedFiles) {
+        if (!loaded) continue
+        const { file, fileData } = loaded
+        try {
           const name = normalizeResultName(file.name, file.path)
           const result = resultMap.get(name)
           if (!result) continue
@@ -637,9 +658,9 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
       const newResults = Array.from(resultMap.values()).filter(result => result.data || result.phaseData || result.randomPhaseData || result.turnMetrics || result.randomTurnMetrics)
 
       if (newResults.length > 0) {
+        persistenceReady.current = true
         setResults(prev => {
           const updated = [...prev, ...newResults]
-          saveResults(updated)
           return updated
         })
       } else {
@@ -656,12 +677,12 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
   }
 
   useEffect(() => {
-    if (!requestedFolder?.path) return
+    if (!isLoaded || !persistenceReady.current || !requestedFolder?.path) return
     setFolderInput(requestedFolder.path)
     void scanFolder(requestedFolder.path)
     // requestId intentionally permits importing the same folder again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestedFolder?.requestId])
+  }, [isLoaded, requestedFolder?.requestId])
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {

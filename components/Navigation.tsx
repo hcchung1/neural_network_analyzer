@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import Link from "next/link";
+import { useSidecarHealth } from "@/hooks/useSidecarHealth";
 import { Compass, FolderKanban, Database, GitCompare, Settings, Activity, ChevronLeft, ChevronRight } from "lucide-react";
 
 export function Sidebar({ activeTab }: { activeTab: string }) {
@@ -62,12 +63,13 @@ export function Sidebar({ activeTab }: { activeTab: string }) {
 export function TopContextBar({
   modelName = "Not Loaded",
   device = "cpu",
-  sidecarHealthy = true,
 }: {
   modelName?: string;
   device?: string;
-  sidecarHealthy?: boolean;
 }) {
+  const health = useSidecarHealth();
+  const healthy = health.status === "healthy";
+  const offline = health.status === "offline";
   return (
     <header className="h-12 bg-white border-b border-slate-200 px-4 flex items-center justify-between text-xs text-slate-600 font-mono">
       <div className="flex items-center space-x-4">
@@ -83,11 +85,11 @@ export function TopContextBar({
 
       <div className="flex items-center space-x-2 font-sans">
         <span className="text-slate-400">Sidecar Status:</span>
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-          sidecarHealthy ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-rose-50 text-rose-700 border border-rose-200"
+        <span role="status" aria-label="Sidecar health" className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+          healthy ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : offline ? "bg-rose-50 text-rose-700 border border-rose-200" : "bg-slate-50 text-slate-600 border border-slate-200"
         }`}>
-          <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${sidecarHealthy ? "bg-emerald-500" : "bg-rose-500"}`} />
-          {sidecarHealthy ? "Healthy" : "Offline"}
+          <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${healthy ? "bg-emerald-500" : offline ? "bg-rose-500" : "bg-slate-400"}`} />
+          {healthy ? `Healthy · ${health.rttMs} ms` : offline ? "Offline" : "Checking"}
         </span>
       </div>
     </header>

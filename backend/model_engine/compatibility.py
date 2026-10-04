@@ -113,6 +113,16 @@ def describe_capabilities(model_name: str) -> ModelCapabilities:
     )
 
 
+def describe_analysis_capabilities(model_name: str) -> Dict[str, Any]:
+    """Capabilities actually served by the analysis routes, not just the architecture."""
+    capabilities = describe_capabilities(model_name).to_dict()
+    capabilities["has_embedding"] = False
+    capabilities["unavailable_probes"] = {
+        "embedding": "此分析服務尚未提供 Embedding probe；目前可檢視 Attention 與模型輸出。"
+    }
+    return capabilities
+
+
 def inspect_checkpoint(checkpoint_blob: Any, requested_phase: Optional[str] = None) -> Tuple[Dict[str, torch.Tensor], Optional[str]]:
     """Extract model state_dict and phase name from checkpoint formats:
     1. Plain state_dict
@@ -312,6 +322,8 @@ def load_checkpoint_strictly(
     """
     if not _FACTORY_AVAILABLE:
         raise RuntimeError("MODEL_BUILD_FAILED: Transformer model factory is unavailable")
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise ValueError("DEVICE_UNAVAILABLE: CUDA is unavailable on the server. Select CPU or enable GPU access.")
 
     if not checkpoint_path or checkpoint_path.strip() in ("", "dummy"):
         name_for_dummy = manifest_spec.get("name", "transTest") if manifest_spec else "transTest"

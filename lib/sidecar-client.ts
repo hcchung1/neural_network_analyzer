@@ -2,19 +2,21 @@ import { NextResponse } from "next/server";
 
 const SIDECAR_BASE_URL = process.env.PYTHON_SIDECAR_URL || "http://127.0.0.1:8080/internal/v1";
 
-export async function forwardToSidecar(endpoint: string, method: string = "GET", body?: any) {
+export async function forwardToSidecar(endpoint: string, method: string = "GET", body?: any, modelHandle?: string | null) {
   const url = `${SIDECAR_BASE_URL}${endpoint}`;
   try {
     const res = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(modelHandle ? { "X-Model-Handle": modelHandle } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
     });
 
     const data = await res.json();
     if (!res.ok) {
-      return NextResponse.json(data, { status: res.status });
+      const payload = data.detail?.error ? data.detail : data;
+      const retry = res.headers.get("Retry-After");
+      return NextResponse.json(payload, { status: res.status, headers: retry ? { "Retry-After": retry } : {} });
     }
     return NextResponse.json(data);
   } catch (err: any) {

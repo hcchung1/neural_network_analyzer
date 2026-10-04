@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { copyToClipboard } from '@/lib/clipboard'
+import { rowWindow, CSV_ROW_HEIGHT, CSV_HEADER_HEIGHT } from '@/lib/performance-ui'
 
 interface CsvSession {
   id: string
@@ -211,6 +212,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
   const normalSidePaneWidthRef = useRef(sidePaneWidth)
   const splitContainerRef = useRef<HTMLDivElement>(null)
   const tableContainerRef = useRef<HTMLDivElement>(null)
+  const [tableViewport, setTableViewport] = useState({ top: 0, height: 600 })
   const sidePaneRef = useRef<HTMLElement>(null)
   const splitSeparatorRef = useRef<HTMLDivElement>(null)
   const [isResizingSplit, setIsResizingSplit] = useState(false)
@@ -241,6 +243,22 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
     () => sessions.find(session => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   )
+  const visibleRows = rowWindow(activeSession?.rows.length ?? 0, Math.max(0, tableViewport.top - CSV_HEADER_HEIGHT), tableViewport.height)
+  useEffect(() => {
+    const container = tableContainerRef.current
+    if (!container) return
+    const measure = () => setTableViewport({ top: container.scrollTop, height: container.clientHeight || 600 })
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [isLoaded])
+  useEffect(() => {
+    const container = tableContainerRef.current
+    if (!container || pendingTableScrollRef.current) return
+    container.scrollTop = 0
+    setTableViewport(old => ({ ...old, top: 0 }))
+  }, [activeSessionId, activeSession?.rows])
   const relatedSession = useMemo(
     () => sessions.find(session => session.id === relatedSessionId) ?? null,
     [relatedSessionId, sessions]
@@ -766,13 +784,22 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
   useEffect(() => {
     const pending = pendingTableScrollRef.current
     if (!pending || !tableContainerRef.current) return
-    const cell = tableContainerRef.current.querySelector<HTMLElement>(
+    const container = tableContainerRef.current
+    const targetTop = CSV_HEADER_HEIGHT + pending.rowIndex * CSV_ROW_HEIGHT
+    if (targetTop < container.scrollTop + CSV_HEADER_HEIGHT || targetTop + CSV_ROW_HEIGHT > container.scrollTop + container.clientHeight) {
+      container.scrollTop = Math.max(0, targetTop - container.clientHeight / 2)
+      setTableViewport({ top: container.scrollTop, height: container.clientHeight || 600 })
+      return
+    }
+    const cell = container.querySelector<HTMLElement>(
       `[data-csv-row="${pending.rowIndex}"][data-csv-column="${pending.colIndex}"]`
     )
     if (!cell) return
     pendingTableScrollRef.current = null
-    cell.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
-  }, [activeSession?.rows, selectedCell, selectedRowIndex])
+    // Keep the vertical window stable while revealing a horizontally offscreen cell.
+    if (cell.offsetLeft < container.scrollLeft) container.scrollLeft = cell.offsetLeft
+    else if (cell.offsetLeft + cell.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = cell.offsetLeft + cell.offsetWidth - container.clientWidth
+  }, [activeSession?.rows, selectedCell, selectedRowIndex, tableViewport])
 
   const togglePinned = (sessionId: string) => {
     setSessions(prev => prev.map(session => session.id === sessionId ? { ...session, pinned: !session.pinned } : session))
@@ -1059,7 +1086,10 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
           alignItems: 'stretch'
         }}
       >
-        <div ref={tableContainerRef} style={{ flex: 1, minWidth: 0, overflow: 'auto', border: '1px solid #d0d7de', borderRadius: '6px', backgroundColor: '#fff' }}>
+        <div ref={tableContainerRef} data-testid="csv-viewport" onScroll={event => {
+          const container = event.currentTarget
+          setTableViewport({ top: container.scrollTop, height: container.clientHeight || 600 })
+        }} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'auto', border: '1px solid #d0d7de', borderRadius: '6px', backgroundColor: '#fff' }}>
           {!activeSession ? (
             <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Open a CSV or ZIP file to begin.</div>
           ) : (
@@ -1067,16 +1097,18 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
               <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f6f8fa', zIndex: 1 }}>
                 <tr>
                   {activeSession.headers.map(header => (
-                    <th key={header} style={{ borderBottom: '1px solid #d0d7de', borderRight: '1px solid #eee', padding: '6px', textAlign: 'left', whiteSpace: 'nowrap' }}>{header}</th>
+                    <th key={header} style={{ borderBottom: '1px solid #d0d7de', borderRight: '1px solid #eee', padding: '6px', height: CSV_HEADER_HEIGHT, boxSizing: 'border-box', textAlign: 'left', whiteSpace: 'nowrap' }}>{header}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {activeSession.rows.map((row, rowIndex) => (
-                  <tr
+                {visibleRows.before > 0 && <tr aria-hidden="true"><td colSpan={activeSession.headers.length} style={{ height: visibleRows.before, padding: 0, border: 0 }} /></tr>}
+                {activeSession.rows.slice(visibleRows.start, visibleRows.end).map((row, visibleIndex) => {
+                  const rowIndex = visibleRows.start + visibleIndex
+                  return <tr
                     key={rowIndex}
                     onClick={() => setSelectedRowIndex(rowIndex)}
-                    style={{ backgroundColor: selectedRowIndex === rowIndex ? '#e7f5ff' : undefined }}
+                    style={{ height: CSV_ROW_HEIGHT, backgroundColor: selectedRowIndex === rowIndex ? '#eff6ff' : undefined }}
                   >
                     {activeSession.headers.map((header, colIndex) => {
                       const value = row[colIndex] ?? ''
@@ -1098,6 +1130,9 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
                             borderBottom: '1px solid #eee',
                             borderRight: '1px solid #f1f3f5',
                             padding: '5px 6px',
+                            height: CSV_ROW_HEIGHT,
+                            boxSizing: 'border-box',
+                            lineHeight: '19px',
                             maxWidth: header.toLowerCase() === 'tenhou_link' ? '420px' : '260px',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -1114,7 +1149,8 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
                       )
                     })}
                   </tr>
-                ))}
+                })}
+                {visibleRows.after > 0 && <tr aria-hidden="true"><td colSpan={activeSession.headers.length} style={{ height: visibleRows.after, padding: 0, border: 0 }} /></tr>}
               </tbody>
             </table>
           )}

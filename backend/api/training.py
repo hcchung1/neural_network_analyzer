@@ -26,7 +26,7 @@ class FolderScanResponse(BaseModel):
 
 
 @router.post("/scan", response_model=FolderScanResponse)
-async def scan_training_folder(request: FolderScanRequest) -> FolderScanResponse:
+def scan_training_folder(request: FolderScanRequest) -> FolderScanResponse:
     """Scan a folder for training history and phase analysis CSV files."""
     folder_path = os.path.expanduser(request.folder_path)
     
@@ -88,7 +88,7 @@ class ReadFileResponse(BaseModel):
 
 
 @router.post("/read_file", response_model=ReadFileResponse)
-async def read_training_file(request: ReadFileRequest) -> ReadFileResponse:
+def read_training_file(request: ReadFileRequest) -> ReadFileResponse:
     """Read a single training history file."""
     file_path = os.path.expanduser(request.file_path)
     

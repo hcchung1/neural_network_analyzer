@@ -21,14 +21,21 @@ const actionSchema = z.discriminatedUnion("type", [
 const token = (req: NextRequest) => req.headers.get("authorization")?.replace(/^Bearer /, "") || "";
 function failure(e: unknown) {
   const invalid = e instanceof z.ZodError || e instanceof SyntaxError;
-  return NextResponse.json({ error: e instanceof RoomError ? e.message : invalid ? "請求內容格式不正確。" : "協作服務暫時無法使用，請重試。" }, { status: e instanceof RoomError ? e.status : invalid ? 400 : 503 });
+  const status = e instanceof RoomError ? e.status : invalid ? 400 : 503;
+  return NextResponse.json({ error: e instanceof RoomError ? e.message : invalid ? "請求內容格式不正確。" : "協作服務暫時無法使用，請重試。" }, {
+    status, headers: status === 503 ? { "Retry-After": "2" } : undefined,
+  });
 }
 export async function GET(req: NextRequest, { params }: Context) {
   try {
-    const room = getRoom(params.roomId, token(req));
-    // Presence is refreshed independently of document revisions.
-    const { analysis, ...metadata } = room;
-    return NextResponse.json({ ...metadata, ...(req.nextUrl.searchParams.get("analysisRevision") === String(room.analysisRevision) ? {} : { analysis }) }, { headers: { "Cache-Control": "no-store" } });
+    const parameter = (name: string) => {
+      const raw = req.nextUrl.searchParams.get(name);
+      return raw !== null && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : undefined;
+    };
+    const room = getRoom(params.roomId, token(req), {
+      revision: parameter("revision"), analysisRevision: parameter("analysisRevision"),
+    });
+    return NextResponse.json(room, { headers: { "Cache-Control": "no-store" } });
   } catch (e) { return failure(e); }
 }
 export async function POST(req: NextRequest, { params }: Context) {
@@ -48,12 +55,16 @@ export async function POST(req: NextRequest, { params }: Context) {
       signal: AbortSignal.timeout(240000), body: JSON.stringify({ model, ...(action.type === "infer" ? { input_data: action.input } : {}) }),
     });
     const data = await response.json();
-    if (!response.ok) throw new RoomError(typeof data.detail === "string" ? data.detail : "模型分析失敗，請確認模型與樣本。", 400);
+    if (!response.ok) throw new RoomError(
+      data.detail?.error?.message || (typeof data.detail === "string" ? data.detail : "模型分析失敗，請確認模型與樣本。"),
+      response.status
+    );
     const analysis = action.type === "load" ? {
       model, modelName: data.model_name, inputSchema: data.input_schema, capabilities: data.capabilities,
       attention: {}, output: [], tokenCount: data.input_schema?.seq_len || 16, maxLayer: Math.max(0, data.layer_count - 1),
     } : {
       ...job.analysis, attention: data.attention, output: data.output,
+      outputShape: data.output_shape, outputKind: data.output_kind,
       sample: action.sample, tokenCount: Math.min(action.tokenCount, data.input_schema?.seq_len || action.tokenCount),
       maxLayer: Math.max(0, data.layer_count - 1),
     };

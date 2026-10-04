@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RoomIdentity, RoomSnapshot } from "@/lib/collaboration-types";
+import { RoomIdentity, RoomPoll, RoomSnapshot } from "@/lib/collaboration-types";
+import { mergeRoomSnapshot, startWorkspacePolling } from "@/lib/workspace-polling";
 
 export function useWorkspace() {
   const [identity, setIdentity] = useState<RoomIdentity | null>(null);
@@ -14,11 +15,10 @@ export function useWorkspace() {
   const current = useRef<RoomSnapshot | null>(null);
   const activeIdentity = useRef<RoomIdentity | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const accept = useCallback((data: RoomSnapshot, roomId: string) => {
-    if (activeIdentity.current?.roomId !== roomId) return;
-    const previous = current.current;
-    if (previous && previous.id === data.id && data.revision < previous.revision) return;
-    const next = { ...data, analysis: data.analysis ?? previous?.analysis };
+  const accept = useCallback((data: RoomPoll, who: RoomIdentity) => {
+    if (activeIdentity.current !== who) return;
+    const next = mergeRoomSnapshot(current.current, data);
+    if (next === current.current) return;
     current.current = next;
     setRoom(next);
   }, []);
@@ -38,33 +38,33 @@ export function useWorkspace() {
   }, []);
   useEffect(() => {
     if (!identity) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const controller = new AbortController();
-    const poll = async () => {
-      try {
-        const revision = current.current?.analysisRevision ?? -1;
-        const response = await fetch(`/api/v1/workspaces/${identity.roomId}?analysisRevision=${revision}`, {
-          headers: { Authorization: `Bearer ${identity.token}` }, cache: "no-store", signal: controller.signal,
+    return startWorkspacePolling({
+      hidden: () => document.hidden,
+      poll: async signal => {
+        const roomRevision = current.current?.revision ?? -1;
+        const analysisRevision = current.current?.analysisRevision ?? -1;
+        const response = await fetch(`/api/v1/workspaces/${identity.roomId}?revision=${roomRevision}&analysisRevision=${analysisRevision}`, {
+          headers: { Authorization: `Bearer ${identity.token}` }, cache: "no-store", signal,
         });
         const data = await response.json();
+        if (signal.aborted || activeIdentity.current !== identity) return false;
         if (!response.ok) {
           if (response.status === 401 || response.status === 404) {
             sessionStorage.removeItem(`workspace:${identity.roomId}`);
             activeIdentity.current = null; current.current = null;
-            setIdentity(null); setRoom(null);
+            setIdentity(null); setRoom(null); setConnected(false);
+            setConnectionError(data.error || "加入憑證已失效，請重新加入工作區。");
+            return false;
           }
-          throw new Error(data.error);
+          throw new Error(data.error || "連線中斷，正在重連。");
         }
-        if (!stopped) { accept(data, identity.roomId); setConnected(true); setConnectionError(""); }
-      } catch (e) {
-        if (!stopped) { setConnected(false); setConnectionError(e instanceof Error ? e.message : "連線中斷，正在重連。"); }
-      } finally {
-        if (!stopped) timer = setTimeout(poll, 900);
-      }
-    };
-    void poll();
-    return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+        accept(data, identity); setConnected(true); setConnectionError("");
+      },
+      onError: e => {
+        if (activeIdentity.current !== identity) return;
+        setConnected(false); setConnectionError(e instanceof Error ? e.message : "連線中斷，正在重連。");
+      },
+    });
   }, [identity, accept]);
   const join = async (name: string, existing?: string) => {
     setPending(true); setError(""); setConnectionError("");
@@ -74,7 +74,7 @@ export function useWorkspace() {
       if (!response.ok) throw new Error(data.error);
       activeIdentity.current = data.identity;
       current.current = null;
-      setIdentity(data.identity); accept(data.room, data.identity.roomId);
+      setIdentity(data.identity); accept(data.room, data.identity);
       sessionStorage.setItem(`workspace:${data.identity.roomId}`, JSON.stringify(data.identity));
       const url = new URL(window.location.href); url.searchParams.set("room", data.identity.roomId);
       window.history.replaceState(null, "", url);
@@ -94,9 +94,10 @@ export function useWorkspace() {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
-        accept(data, who.roomId); setConnected(true);
+        if (activeIdentity.current !== who) return null;
+        accept(data, who); setConnected(true);
         return data as RoomSnapshot;
-      } catch (e) { setError(e instanceof Error ? e.message : "操作失敗，請重試。"); return null; }
+      } catch (e) { if (activeIdentity.current === who) setError(e instanceof Error ? e.message : "操作失敗，請重試。"); return null; }
     };
     const result = queue.current.then(operation, operation);
     queue.current = result;

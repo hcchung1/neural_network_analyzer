@@ -9,23 +9,10 @@ export function DataSourceLibrary() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/runs");
+      const res = await fetch("/api/v1/runs?includeArtifacts=true");
+      if (!res.ok) throw new Error("Unable to load run artifacts");
       const data = await res.json();
-      if (data.runs) {
-        const artifactsPromises = data.runs.map((r: any) =>
-          fetch(`/api/v1/runs/${r.run_id}`).then(res => res.json()).catch(() => ({ run: null }))
-        );
-        const details = await Promise.all(artifactsPromises);
-        let artifacts: any[] = [];
-        details.forEach(d => {
-          if (d.run && d.run.artifacts) {
-            d.run.artifacts.forEach((a: any) => {
-              artifacts.push({ ...a, run_id: d.run.run_id });
-            });
-          }
-        });
-        setAllArtifacts(artifacts);
-      }
+      setAllArtifacts(data.artifacts || []);
     } catch (err) {
       console.error(err);
     } finally {
