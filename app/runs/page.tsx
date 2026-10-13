@@ -6,10 +6,12 @@ import TrainingResultsComponent from "@/features/inference/TrainingResultsCompon
 
 export default function RunsPage() {
   const [requestedFolder, setRequestedFolder] = useState<{ path: string; requestId: number } | null>(null);
+
   useEffect(() => {
     const path = new URLSearchParams(window.location.search).get("folder");
     if (path) setRequestedFolder({ path, requestId: 1 });
   }, []);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar activeTab="runs" />

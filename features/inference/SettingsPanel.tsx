@@ -107,7 +107,7 @@ export function SettingsPanel() {
 
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-6">
           <div className="flex items-center space-x-2">
-            <HardDrive className="w-5 h-5 text-emerald-500" />
+            <HardDrive className="w-5 h-5 text-blue-500" />
             <h3 className="font-semibold text-slate-800">Artifact Catalog Configuration</h3>
           </div>
 
@@ -118,14 +118,14 @@ export function SettingsPanel() {
                 type="text"
                 value={artifactRoot}
                 onChange={(e) => setArtifactRoot(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             <button
               onClick={triggerScan}
               disabled={isScanning}
-              className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
             >
               {isScanning ? "Scanning..." : "Trigger Full Catalog Scan"}
             </button>

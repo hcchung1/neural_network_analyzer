@@ -35,8 +35,8 @@ export default function ExplorePage() {
   const [modelLoaded, setModelLoaded] = useState(false);
   const [modelName, setModelName] = useState("");
   const [loadedModelPath, setLoadedModelPath] = useState("");
-  const [device, setDevice] = useState("cpu");
-  const [targetDevice, setTargetDevice] = useState("cpu");
+  const [device, setDevice] = useState("cuda");
+  const [targetDevice, setTargetDevice] = useState("cuda");
   const [capabilities, setCapabilities] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +63,14 @@ export default function ExplorePage() {
   const [inputMessage, setInputMessage] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const endOfMessagesRef = useRef<HTMLDivElement>(null);
+  const chatContext = `${activeRoom.current || "personal"}:${workspace.room?.analysisRevision ?? ""}:${personalHandle.current || ""}`;
+  const currentChatContext = useRef(chatContext);
+  currentChatContext.current = chatContext;
+  useEffect(() => {
+    setMessages([]);
+    setChatLoading(false);
+  }, [chatContext]);
+
   const clearPersonalView = () => {
     personalHandle.current = null; personalSession.current = null;
     setModelLoaded(false); setModelName(""); setLoadedModelPath(""); setModelInputSchema(null);
@@ -109,7 +117,7 @@ export default function ExplorePage() {
     const a = room.analysis;
     setModelLoaded(!!a.model); setModelName(a.modelName || "");
     setLoadedModelPath(a.model?.checkpoint_path === "dummy" ? a.modelName || "" : a.model?.checkpoint_path || "");
-    setDevice(a.model?.device || "cpu"); setTargetDevice(a.model?.device || "cpu");
+    setDevice(a.model?.device || "cuda"); setTargetDevice(a.model?.device || "cuda");
     setCheckpointPath(a.model?.checkpoint_path === "dummy" ? "" : a.model?.checkpoint_path || "");
     setModelArchitecture(String(a.model?.manifest_spec?.name || (a.model?.checkpoint_path === "dummy" ? "transOriginal" : "auto")));
     setCapabilities(a.capabilities || null); setModelInputSchema(a.inputSchema || null);
@@ -278,11 +286,13 @@ export default function ExplorePage() {
   };
 
   const sendChatMessage = async () => {
-    if (!inputMessage.trim()) return;
+    if (!inputMessage.trim() || chatLoading) return;
+    const context = currentChatContext.current;
+    const isCurrent = () => mounted.current && currentChatContext.current === context;
 
     const userMsg = inputMessage;
     setInputMessage("");
-    const newMessages = [...messages, { role: "user", content: userMsg }];
+    const newMessages = [...messages, { role: "user", content: userMsg }].slice(-40);
     setMessages(newMessages);
     setChatLoading(true);
 
@@ -290,19 +300,29 @@ export default function ExplorePage() {
       const res = await fetch("/api/v1/assistant/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, context: { modelName, capabilities } }),
+        body: JSON.stringify({ messages: newMessages, page_context: {
+          model_path: loadedModelPath,
+          selected_token: selectedToken, current_layer: currentLayer,
+          // Send only fields accepted by the assistant's strict DenseInputSchema.
+          ...(modelInputSchema?.seq_len <= 512 && modelInputSchema?.feature_dim >= 58 && modelInputSchema?.feature_dim <= 20000 ? {
+            model_input_schema: {
+              dtype: "float32", rank: 3, batch_size: 1,
+              seq_len: modelInputSchema.seq_len, feature_dim: modelInputSchema.feature_dim,
+              shape: [1, modelInputSchema.seq_len, modelInputSchema.feature_dim],
+            },
+          } : {}),
+        } }),
       });
       const data = await res.json();
-      if (data.role === 'assistant') {
-        setMessages(prev => [...prev, { role: "assistant", content: data.content }]);
-      } else {
-        setMessages(prev => [...prev, { role: "assistant", content: JSON.stringify(data) }]);
-      }
+      if (!isCurrent()) return;
+      if (!res.ok || !data.success) throw new Error(data.error?.message ||
+        (typeof data.detail === "string" ? data.detail : "分析對話失敗，請稍後重試。"));
+      if (data.kind !== "chat" || typeof data.reply !== "string") throw new Error("分析對話回應格式不正確。");
+      setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
     } catch (err: any) {
-      console.error("Chat error:", err);
-      setMessages(prev => [...prev, { role: "assistant", content: "Sorry, an error occurred while connecting to the assistant API." }]);
+      if (isCurrent()) setMessages(prev => [...prev, { role: "assistant", content: err.message || "無法連線至分析對話服務。" }]);
     } finally {
-      setChatLoading(false);
+      if (isCurrent()) setChatLoading(false);
     }
   };
 

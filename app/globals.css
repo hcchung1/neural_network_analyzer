@@ -3,16 +3,20 @@
 @tailwind utilities;
 
 :root {
-  --background: #f8f9fa;
+  --background: #f8fafc;
   --foreground: #0f172a;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --border: #e2e8f0;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
 }
 
 body {
   background-color: var(--background);
   color: var(--foreground);
 }
-/* ArchAnalyzer Global Styles */
-
 * {
   box-sizing: border-box;
 }
@@ -24,7 +28,7 @@ body {
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  background-color: var(--background);
 }
 
 .app-shell { display: flex; height: 100vh; font-family: system-ui,sans-serif; overflow: hidden; }
@@ -138,44 +142,6 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
 
-/* Utility classes */
-.flex {
-  display: flex;
-}
-
-.flex-column {
-  display: flex;
-  flex-direction: column;
-}
-
-.flex-1 {
-  flex: 1;
-}
-
-.gap-16 {
-  gap: 16px;
-}
-
-.p-16 {
-  padding: 16px;
-}
-
-.rounded {
-  border-radius: 8px;
-}
-
-.border {
-  border: 1px solid #dee2e6;
-}
-
-.bg-white {
-  background-color: #ffffff;
-}
-
-.shadow {
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
 .csv-output-search { position: relative; display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .csv-output-search > input { flex: 1 1 420px; padding: 8px; border: 1px solid #ced4da; border-radius: 8px; }
 .csv-output-search > span { color: #6c757d; font-size: 12px; }
@@ -183,8 +149,8 @@ code {
 .csv-output-matches button { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .csv-output-matches button:hover { background: #edf2ff; color: #364fc7; }
 .csv-session-toolbar { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
-.csv-library-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid #dbe4ff; border-radius: 999px; background: linear-gradient(135deg,#f3f0ff,#e7f5ff); color: #364fc7; cursor: pointer; box-shadow: 0 3px 10px rgba(76,110,245,.1); }
-.csv-library-toggle small { min-width: 20px; padding: 1px 6px; border-radius: 99px; background: #4c6ef5; color: white; }
+.csv-library-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid #bfdbfe; border-radius: 8px; background: var(--accent-soft); color: #1d4ed8; cursor: pointer; }
+.csv-library-toggle small { min-width: 20px; padding: 1px 6px; border-radius: 99px; background: var(--accent); color: white; }
 .csv-library-toggle .chevron { font-size: 20px; line-height: 12px; transition: transform .28s cubic-bezier(.2,.8,.2,1); }
 .csv-library-toggle .chevron.open { transform: rotate(180deg); }
 .csv-library { position: fixed; inset: 0; z-index: 50; pointer-events: none; visibility: hidden; transition: visibility .28s; }
@@ -200,16 +166,16 @@ code {
 .csv-library-list { display: flex; flex-direction: column; gap: 9px; overflow: auto; max-height: calc(100vh - 90px); }
 .csv-library-item { display: flex; align-items: center; gap: 12px; padding: 11px; border: 1px solid #e7ebf2; border-radius: 13px; background: white; transition: transform .18s, box-shadow .18s, border-color .18s; }
 .csv-library-item:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(31,42,68,.09); }
-.csv-library-item.active { border-color: #748ffc; box-shadow: 0 0 0 3px #edf2ff; }
+.csv-library-item.active { border-color: #93c5fd; box-shadow: 0 0 0 3px var(--accent-soft); }
 .csv-library-name { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; cursor: pointer; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .csv-library-name small { display: block; margin-top: 4px; color: #868e96; font: 10px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; }
 .modern-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .modern-switch span { display: block; width: 43px; height: 24px; padding: 3px; border-radius: 99px; background: #ced4da; cursor: pointer; transition: background .24s, box-shadow .24s; }
 .modern-switch span::after { content: ''; display: block; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 2px 6px rgba(0,0,0,.25); transition: transform .28s cubic-bezier(.2,.9,.25,1.3); }
-.modern-switch input:checked + span { background: linear-gradient(135deg,#5c7cfa,#845ef7); box-shadow: 0 0 0 3px #edf2ff; }
+.modern-switch input:checked + span { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .modern-switch input:checked + span::after { transform: translateX(19px); }
-.csv-related-trigger { width: 30px; flex: 0 0 30px; padding: 0; border: 0; border-left: 1px solid #d0d7de; background: linear-gradient(135deg,#ebfbee,#e6fcf5); color: #087f5b; cursor: pointer; font-size: 15px; transition: color .18s, background .18s, transform .18s; }
-.csv-related-trigger:hover { color: #5f3dc4; background: #f3f0ff; transform: scale(1.08); }
+.csv-related-trigger { width: 30px; flex: 0 0 30px; padding: 0; border: 0; border-left: 1px solid #bfdbfe; background: var(--accent-soft); color: #1d4ed8; cursor: pointer; font-size: 15px; transition: color .18s, background .18s; }
+.csv-related-trigger:hover { color: #1e40af; background: #dbeafe; }
 .csv-related-drawer { position: fixed; inset: 0; z-index: 55; pointer-events: none; visibility: hidden; transition: visibility .28s; }
 .csv-related-drawer.open { pointer-events: auto; visibility: visible; }
 .csv-related-backdrop { position: absolute; inset: 0; background: rgba(15,23,42,0); backdrop-filter: blur(0); transition: all .28s ease; }
@@ -223,11 +189,57 @@ code {
 .csv-related-content { overflow: auto; padding: 14px 2px 30px; }
 .csv-related-content section + section { margin-top: 22px; }
 .csv-related-content h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 14px; color: #343a40; }
-.csv-related-content h3 span { padding: 2px 7px; border-radius: 99px; background: #e5dbff; color: #5f3dc4; font-size: 11px; }
+.csv-related-content h3 span { padding: 2px 7px; border-radius: 99px; background: var(--accent-soft); color: #1d4ed8; font-size: 11px; }
 .csv-related-models { display: flex; flex-direction: column; gap: 8px; }
 .csv-related-models button,.csv-training-result-button { width: 100%; padding: 11px; border: 1px solid #e1e7ef; border-radius: 11px; background: white; text-align: left; cursor: pointer; transition: border-color .18s, box-shadow .18s, transform .18s; }
-.csv-related-models button:hover,.csv-training-result-button:hover { border-color: #748ffc; box-shadow: 0 7px 20px rgba(76,110,245,.12); transform: translateY(-1px); }
-.csv-related-models button span,.csv-training-result-button span { display: block; margin-bottom: 4px; color: #4263eb; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.csv-related-models button:hover,.csv-training-result-button:hover { border-color: #93c5fd; box-shadow: 0 7px 20px rgba(37,99,235,.1); transform: translateY(-1px); }
+.csv-related-models button span,.csv-training-result-button span { display: block; margin-bottom: 4px; color: #2563eb; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .csv-related-models button strong,.csv-training-result-button strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .csv-related-models button small,.csv-training-result-button small { display: block; margin-top: 4px; color: #868e96; font: 10px ui-monospace,monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .csv-related-models button .csv-checkpoint-label { color: #343a40; font-size: 18px; letter-spacing: .01em; }
+
+/* Legacy views use the same controls as the workbench shell. */
+.csv-reader h1,.training-results h1 { color: #0f172a; font-size: 24px; font-weight: 700; line-height: 1.3; }
+.csv-reader h1 button,.training-results h1 button { border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; font-size: 14px; font-weight: 500; }
+.csv-reader h1 button:hover,.training-results h1 button:hover { background: var(--surface-muted); }
+.csv-reader button,.csv-reader input,.csv-reader select,.training-results button,.training-results input { font: inherit; }
+.csv-reader button:not(.csv-library-name):not(.csv-related-trigger),.training-results button { transition: background-color .18s, border-color .18s, color .18s; }
+.csv-reader input:not([type="checkbox"]),.csv-reader select,.training-results input:not([type="color"]) { background: var(--surface); border: 1px solid #cbd5e1; border-radius: 8px; color: #0f172a; font-size: 14px; min-height: 36px; }
+.csv-reader input:focus-visible,.csv-reader select:focus-visible,.csv-reader button:focus-visible,.training-results input:focus-visible,.training-results button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.csv-reader button:disabled,.training-results button:disabled { cursor: not-allowed; opacity: .5; }
+.csv-reader > div > button,.csv-output-search > button { padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: var(--surface); color: #334155; font-size: 14px; font-weight: 500; cursor: pointer; }
+.csv-reader > div > button:hover:not(:disabled),.csv-output-search > button:hover:not(:disabled) { background: var(--surface-muted); border-color: #94a3b8; }
+.csv-reader > div > button.csv-primary-button,.csv-output-search > button.csv-primary-button { border-color: var(--accent); background: var(--accent); color: #fff; }
+.csv-reader > div > button.csv-primary-button:hover:not(:disabled),.csv-output-search > button.csv-primary-button:hover:not(:disabled) { background: #1d4ed8; }
+.csv-output-search > input { border-color: #cbd5e1; }
+.csv-output-matches button:hover { background: var(--accent-soft); color: #1d4ed8; }
+.csv-library-panel,.csv-related-panel { background: var(--surface-muted); }
+.csv-library-panel header,.csv-related-panel header { color: #0f172a; }
+.training-results h2 { color: #1e293b; font-size: 18px; font-weight: 650; }
+.training-results h3 { color: #334155; }
+.training-result-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+.training-result-actions { display: flex; flex-direction: column; gap: 8px; margin-left: 12px; max-width: 100%; justify-self: end; }
+.training-result-image-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.training-result-image-actions:empty { display: none; }
+.training-results .training-image-copy-button { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #475569; font-size: 12px; cursor: pointer; }
+.training-image-copy-button svg { flex-shrink: 0; }
+@media (max-width: 1100px) {
+  .training-result-card { grid-template-columns: auto minmax(0, 1fr); row-gap: 12px; }
+  .training-result-actions { grid-column: 1 / -1; margin-left: 0; }
+}
+.training-empty { margin-top: 20px; padding: 44px 20px; border: 1px dashed #cbd5e1; border-radius: 12px; background: var(--surface); text-align: center; }
+.training-plot-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; }
+@media (max-width: 1000px) { .training-plot-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .csv-reader,.training-results { padding: 16px !important; }.csv-reader h1,.training-results h1 { font-size: 20px; }.csv-session-toolbar { flex-wrap: wrap; } }
+@media (max-width: 1100px) {
+  .explore-content { flex-direction: column; }
+  .explore-main { min-height: 0; }
+  .explore-assistant { width: 100%; height: 240px; border-left: 0; border-top: 1px solid var(--border); }
+}
+@media (max-width: 720px) {
+  .workbench-sidebar { width: 64px !important; flex: 0 0 64px; }
+  .workbench-sidebar > div:first-child { justify-content: center; }
+  .workbench-sidebar > div:first-child > div,.workbench-sidebar nav a span { display: none; }
+  .workbench-sidebar nav a { justify-content: center; padding-left: 0; padding-right: 0; }
+  .explore-main { padding: 16px; }
+}

@@ -3,6 +3,7 @@ import tempfile
 import sys
 from pathlib import Path
 import torch
+from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -17,8 +18,31 @@ from model_engine.compatibility import (
     infer_model_name_and_spec,
     describe_capabilities,
 )
+from models import sequence, components
 
 class ModelCompatibilityTest(unittest.TestCase):
+    def test_cuda_request_reports_unavailable_device(self):
+        with patch("model_engine.compatibility.torch.cuda.is_available", return_value=False):
+            with self.assertRaisesRegex(ValueError, "DEVICE_UNAVAILABLE.*CUDA"):
+                load_checkpoint_strictly("dummy", device="cuda")
+
+    def test_loads_dataparallel_split_keep_checkpoint_with_inferred_options(self):
+        """A training checkpoint keeps its branch structure after loading."""
+        spec = ModelBuildSpec(name="transTest", input_shape=(4, 10), num_classes=2, normalization="ln")
+        with patch.object(sequence, "HEAD_MODE", "split_keep"), patch.object(components, "HEAD_MODE", "split_keep"), patch.object(sequence, "SPLIT_KEEP_MERGE_MODE", "concat"):
+            model = build_model(spec)
+        weights = {f"module.{key}": value for key, value in model.state_dict().items()}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "split_keep.pth"
+            torch.save(weights, path)
+            loaded, inferred, _ = load_checkpoint_strictly(str(path), device="cpu")
+        self.assertEqual(inferred.name, "transTest")
+        self.assertEqual(loaded.transformer_layers[0].attention.head_mode, "split_keep")
+        self.assertIn("branch_merge_proj.0.weight", loaded.state_dict())
+        with torch.no_grad():
+            output = loaded(torch.zeros(1, 4, 10))
+        self.assertEqual(tuple(output.shape), (1, 2))
+
     def test_capabilities_descriptor_per_family(self):
         """Verify model capabilities match expectations per model family."""
         trans_cap = describe_capabilities("transOriginal")

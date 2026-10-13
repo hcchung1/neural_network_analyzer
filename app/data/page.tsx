@@ -1,10 +1,12 @@
 "use client";
 
 import React from "react";
+import { useRouter } from "next/navigation";
 import { Sidebar, TopContextBar } from "@/components/Navigation";
 import CsvReaderComponent from "@/features/sources/CsvReaderComponent";
 
 export default function DataPage() {
+  const router = useRouter();
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar activeTab="data" />
@@ -13,8 +15,8 @@ export default function DataPage() {
         <main className="flex-1 flex flex-col min-h-0 overflow-y-auto">
           <CsvReaderComponent 
             onBack={() => {}} 
-            onAddModel={() => {}} 
-            onAddTrainingResults={() => {}} 
+            onAddModel={(path) => router.push(`/explore?checkpoint=${encodeURIComponent(path)}`)}
+            onAddTrainingResults={(folder) => router.push(`/runs?folder=${encodeURIComponent(folder)}`)}
           />
         </main>
       </div>

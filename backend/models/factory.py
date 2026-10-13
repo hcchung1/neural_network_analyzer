@@ -8,7 +8,7 @@ from typing import Iterator, Optional, Tuple
 
 import torch.nn as nn
 
-from models import baselines, sequence
+from models import baselines, sequence, components
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,8 @@ class ModelBuildSpec:
     use_cls_token: Optional[bool] = None
     f_act_add_dim: Optional[int] = None
     simple_linear_head: Optional[str] = None
+    head_mode: Optional[str] = None
+    split_keep_merge_mode: Optional[str] = None
 
 
 @contextmanager
@@ -29,20 +31,20 @@ def _temporary_architecture_overrides(spec: ModelBuildSpec) -> Iterator[None]:
         "USE_CLS_TOKEN": spec.use_cls_token,
         "F_ACT_ADD_DIM": spec.f_act_add_dim,
         "USE_SIMPLE_LINEAR_HEAD": spec.simple_linear_head,
+        "HEAD_MODE": spec.head_mode,
+        "SPLIT_KEEP_MERGE_MODE": spec.split_keep_merge_mode,
     }
-    original = {
-        name: getattr(sequence, name)
-        for name, value in overrides.items()
-        if value is not None
-    }
+    targets = [(sequence, name, value) for name, value in overrides.items() if value is not None]
+    if spec.head_mode is not None:
+        targets.append((components, "HEAD_MODE", spec.head_mode))
+    original = [(module, name, getattr(module, name)) for module, name, _ in targets]
     try:
-        for name, value in overrides.items():
-            if value is not None:
-                setattr(sequence, name, value)
+        for module, name, value in targets:
+            setattr(module, name, value)
         yield
     finally:
-        for name, value in original.items():
-            setattr(sequence, name, value)
+        for module, name, value in original:
+            setattr(module, name, value)
 
 
 def build_model(spec: ModelBuildSpec) -> nn.Module:

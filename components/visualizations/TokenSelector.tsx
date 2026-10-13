@@ -14,7 +14,7 @@ const TokenSelector: React.FC<TokenSelectorProps> = ({ tokenCount, selectedToken
         aria-label="Token Index"
         value={selectedToken}
         onChange={(e) => onSelect(Number(e.target.value))}
-        style={{ padding: '8px', borderRadius: '4px', minWidth: '120px' }}
+        className="min-w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
       >
         {Array.from({ length: tokenCount }, (_, i) => (
           <option key={i} value={i}>

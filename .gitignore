@@ -78,3 +78,6 @@ playwright-report/
 !/backend/data/
 /backend/data/*
 !/backend/data/*.py
+
+graphify-out/
+tmp/runs-layout-next/

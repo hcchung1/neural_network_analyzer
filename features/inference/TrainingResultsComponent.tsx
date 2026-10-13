@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
+import { Check, Copy } from 'lucide-react'
+import { copyImageToClipboard, copyToClipboard } from '@/lib/clipboard'
 import { mapWithConcurrency } from '@/lib/performance'
 import { readTrainingResults, writeTrainingResults } from '@/lib/training-results-storage'
 
@@ -90,6 +92,108 @@ const PLOT_CONFIG = { responsive: true, displaylogo: false }
 const PLOT_STYLE = { width: '100%', height: '400px' }
 const COMBINED_TURN_PLOT_STYLE = { width: '100%', height: '780px' }
 const COLOR_UPDATE_DEBOUNCE_MS = 300
+const DEFAULT_FOLDER_PATH = '/workspace/Study/Mahjong-Hidden-Information-Forecast/Transformer/output/'
+
+const ResultCopyButton = memo(function ResultCopyButton({ name }: { name: string }) {
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current)
+  }, [])
+
+  const copyName = async () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current)
+    try {
+      await copyToClipboard(name)
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+    resetTimer.current = setTimeout(() => setCopyStatus('idle'), 2000)
+  }
+
+  const copyLabel = copyStatus === 'copied' ? '已複製' : '複製完整名稱'
+  return (
+    <div style={{ display: 'flex', position: 'relative' }}>
+      <button
+        type="button"
+        aria-label={copyLabel}
+        title={copyLabel}
+        onClick={() => void copyName()}
+        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', padding: '5px', border: '1px solid #cbd5e1', borderRadius: '8px', backgroundColor: '#fff', color: '#475569', cursor: 'pointer' }}
+      >
+        {copyStatus === 'copied' ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+      </button>
+      <span role="status" className={copyStatus === 'failed' ? 'absolute right-0 top-full whitespace-nowrap text-xs text-red-700' : 'sr-only'}>
+        {copyStatus === 'copied' ? '已複製完整名稱' : copyStatus === 'failed' ? '複製失敗，請再試一次' : ''}
+      </span>
+    </div>
+  )
+})
+
+const ResultName = memo(function ResultName({ name }: { name: string }) {
+  // Keep the final date/time and any trailing suffix intact while the prefix shrinks.
+  const dates = Array.from(name.matchAll(/\d{8}(?:[_-]\d{6})?|\d{4}[-_]\d{2}[-_]\d{2}/g))
+  const suffixStart = dates.length ? dates[dates.length - 1].index! : Math.max(0, name.length - 16)
+  return (
+    <strong title={name} style={{ display: 'flex', minWidth: 0 }}>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name.slice(0, suffixStart)}</span>
+      <span data-name-suffix style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>{name.slice(suffixStart)}</span>
+    </strong>
+  )
+})
+
+function ResultImageCopyButton({ name, folderPath, kind }: { name: string; folderPath: string; kind: 'training' | 'phase' }) {
+  const [availableImage, setAvailableImage] = useState<string | null>(null)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'copied' | 'failed'>('idle')
+  const [error, setError] = useState('')
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current)
+  }, [])
+  const imageUrl = `/api/v1/training-images?${new URLSearchParams({ folder: folderPath, run: name, kind })}`
+  useEffect(() => {
+    const controller = new AbortController()
+    setAvailableImage(null)
+    void fetch(`${imageUrl}&check=1`, { cache: 'no-store', signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (!controller.signal.aborted && data?.exists === true) setAvailableImage(imageUrl)
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [imageUrl])
+  const plotName = kind === 'training' ? '訓練圖片' : 'Phase圖片'
+  const label = `複製${plotName}`
+  const copyImage = async () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current)
+    setStatus('loading')
+    setError('')
+    try {
+      await copyImageToClipboard(imageUrl)
+      setStatus('copied')
+      resetTimer.current = setTimeout(() => setStatus('idle'), 2000)
+    } catch (error) {
+      setStatus('failed')
+      setError(error instanceof Error ? error.message : '圖片複製失敗')
+    }
+  }
+  if (availableImage !== imageUrl) return null
+  return (
+    <div style={{ minWidth: 0 }}>
+      <button type="button" aria-label={label} title={label} disabled={status === 'loading'}
+        onClick={() => void copyImage()}
+        className="training-image-copy-button"
+      >
+        {status === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        <span>{status === 'loading' ? `複製中 (${plotName})` : status === 'copied' ? `已複製 (${plotName})` : label}</span>
+      </button>
+      <span role="status" className={status === 'failed' ? 'block mt-1 text-xs text-red-700' : 'sr-only'}>
+        {status === 'copied' ? `${label}：已複製` : error}
+      </span>
+    </div>
+  )
+}
 
 interface FullscreenPlotProps {
   data: any[]
@@ -518,7 +622,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
       .finally(() => { if (active) setIsLoaded(true) })
     return () => { active = false }
   }, [])
-  const [folderInput, setFolderInput] = useState('')
+  const [folderInput, setFolderInput] = useState(DEFAULT_FOLDER_PATH)
   const [loading, setLoading] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
 
@@ -956,16 +1060,16 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
 
   if (!isLoaded) return null;
   return (
-    <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif' }}>
+    <div className="training-results" style={{ padding: '24px', fontFamily: 'system-ui, sans-serif' }}>
       <h1 style={{ marginTop: 0, marginBottom: '24px' }}>
         <button
           onClick={onBack}
           style={{
             marginRight: '12px',
             padding: '6px 12px',
-            backgroundColor: '#f0f0f0',
-            border: '1px solid #ccc',
-            borderRadius: '4px',
+            backgroundColor: '#fff',
+            border: '1px solid #cbd5e1',
+            borderRadius: '8px',
             cursor: 'pointer'
           }}
         >
@@ -983,10 +1087,11 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
           placeholder="輸入資料夾路徑（支援 *_history.csv、*_phase_summary.csv、comparison_table.csv）"
           style={{
             flex: 1,
+            minWidth: 0,
             padding: '10px',
             fontSize: '14px',
-            border: '1px solid #ccc',
-            borderRadius: '4px',
+            border: '1px solid #cbd5e1',
+            borderRadius: '8px',
             fontFamily: 'monospace'
           }}
         />
@@ -995,10 +1100,10 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
           disabled={loading}
           style={{
             padding: '10px 20px',
-            backgroundColor: '#4dabf7',
+            backgroundColor: '#2563eb',
             color: '#fff',
             border: 'none',
-            borderRadius: '4px',
+            borderRadius: '8px',
             cursor: loading ? 'not-allowed' : 'pointer',
             opacity: loading ? 0.7 : 1
           }}
@@ -1021,9 +1126,9 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
       )}
 
       {results.length === 0 ? (
-        <div style={{ color: '#888', padding: '40px 0', textAlign: 'center' }}>
-          <p>尚無訓練成果</p>
-          <p style={{ fontSize: '14px' }}>輸入資料夾路徑後點擊「掃描資料夾」，系統會自動找到訓練曲線與 Phase Analysis CSV 並繪製互動式圖表</p>
+        <div className="training-empty">
+          <p className="font-semibold text-slate-700">尚無訓練成果</p>
+          <p className="mt-2 text-sm text-slate-500">輸入資料夾路徑後點擊「掃描資料夾」，系統會自動找到訓練曲線與 Phase Analysis CSV 並繪製互動式圖表</p>
         </div>
       ) : (
         <div>
@@ -1048,13 +1153,13 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
             {results.map(result => (
               <div
                 key={result.id}
+                data-result-card
+                className="training-result-card"
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
                   padding: '12px',
                   border: '1px solid #e5e5e5',
                   borderRadius: '8px',
-                  backgroundColor: '#fafafa'
+                  backgroundColor: '#ffffff'
                 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginRight: '12px' }}>
@@ -1074,7 +1179,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
                   />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <strong>{result.name}</strong>
+                  <ResultName name={result.name} />
                   <div style={{ fontSize: '12px', color: '#888', wordBreak: 'break-all' }}>{result.folderPath}</div>
                   <div style={{ display: 'flex', gap: '6px', marginTop: '4px', fontSize: '11px' }}>
                     {result.data && <span style={{ padding: '2px 6px', borderRadius: '10px', backgroundColor: '#e7f5ff', color: '#1971c2' }}>Training</span>}
@@ -1082,35 +1187,46 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
                     {(result.turnMetrics || result.randomTurnMetrics) && <span style={{ padding: '2px 6px', borderRadius: '10px', backgroundColor: '#fff4e6', color: '#e8590c' }}>Turn Metrics</span>}
                   </div>
                 </div>
-                <button
-                  onClick={() => toggleVisibility(result.id)}
-                  style={{
-                    backgroundColor: result.visible ? '#28a745' : '#6c757d',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '4px 12px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '12px'
-                  }}
-                >
-                  {result.visible ? '顯示中' : '隱藏'}
-                </button>
-                <button
-                  onClick={() => removeResult(result.id)}
-                  style={{
-                    backgroundColor: '#dc3545',
-                    color: '#fff',
-                    border: 'none',
-                    padding: '4px 12px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    marginLeft: '8px',
-                    fontSize: '12px'
-                  }}
-                >
-                  移除
-                </button>
+                <div className="training-result-actions">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+                    <ResultCopyButton name={result.name} />
+                    <button
+                      onClick={() => toggleVisibility(result.id)}
+                      style={{
+                        height: '32px',
+                        minWidth: '72px',
+                        backgroundColor: result.visible ? '#eff6ff' : '#f1f5f9',
+                        color: result.visible ? '#1d4ed8' : '#475569',
+                        border: '1px solid #cbd5e1',
+                        padding: '4px 12px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      {result.visible ? '顯示中' : '隱藏'}
+                    </button>
+                    <button
+                      onClick={() => removeResult(result.id)}
+                      style={{
+                        height: '32px',
+                        backgroundColor: '#fff',
+                        color: '#be123c',
+                        border: '1px solid #fecdd3',
+                        padding: '4px 12px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      移除
+                    </button>
+                  </div>
+                  <div className="training-result-image-actions">
+                    <ResultImageCopyButton name={result.name} folderPath={result.folderPath} kind="training" />
+                    <ResultImageCopyButton name={result.name} folderPath={result.folderPath} kind="phase" />
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -1118,7 +1234,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
           {visibleResults.length > 0 && (
             <>
               <h2 style={{ marginTop: '12px', marginBottom: '16px' }}>一般訓練曲線比較</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div className="training-plot-grid">
                 <FullscreenPlot data={createTraces('trainLoss')} layout={createLayout('Train Loss', 'Loss')} />
                 <FullscreenPlot data={createCombinedTraces('valLoss', 'valCopyLoss')} layout={createLayout('Validation Loss (Normal vs Copy)', 'Loss')} />
                 <FullscreenPlot data={createCombinedTraces('valAccuracy', 'valCopyAccuracy')} layout={createLayout('Validation Accuracy (Normal vs Copy)', 'Accuracy')} />
@@ -1131,7 +1247,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
           {visiblePhaseResults.length > 0 && (
             <>
               <h2 style={{ marginTop: '32px', marginBottom: '16px' }}>Phase Analysis 結果比較</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div className="training-plot-grid">
                 <FullscreenPlot data={createPhaseTraces('accuracy')} layout={createPhaseLayout('Phase Accuracy', 'Accuracy', 1)} />
                 <FullscreenPlot data={createPhaseTraces('f1Score')} layout={createPhaseLayout('Phase F1 Score', 'F1', 1)} />
                 <FullscreenPlot data={createPhaseTraces('auc')} layout={createPhaseLayout('Phase ROC AUC', 'AUC', 1)} />
@@ -1144,7 +1260,7 @@ export default function TrainingResultsPage({ onBack, requestedFolder }: Trainin
           {visibleTurnMetricResults.length > 0 && (
             <>
               <h2 style={{ marginTop: '32px', marginBottom: '16px' }}>Base vs Random Turn Metrics</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div className="training-plot-grid">
                 <FullscreenPlot data={createTurnMetricTraces('avgProbability')} layout={createLayout('Base vs Random Avg Probability by Turn', 'Avg Probability')} />
                 <FullscreenPlot data={createTurnMetricTraces('accuracy')} layout={createLayout('Base vs Random Accuracy by Turn', 'Accuracy')} />
                 <FullscreenPlot data={createTurnMetricTraces('f1Score')} layout={createLayout('Base vs Random F1 Score by Turn', 'F1')} />

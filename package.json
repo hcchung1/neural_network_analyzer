@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:collaboration": "playwright test tests/collaboration.spec.cjs"
+    "test:collaboration": "playwright test tests/collaboration.spec.cjs",
+    "test:hydration": "playwright test tests/hydration.spec.cjs"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

@@ -4,6 +4,8 @@ import { rowWindow, CSV_ROW_HEIGHT, CSV_HEADER_HEIGHT } from '@/lib/performance-
 
 interface CsvSession {
   id: string
+  needsOpen: boolean
+  pageLoaded: boolean
   sourcePath: string
   displayName: string
   displayPath: string
@@ -87,7 +89,14 @@ function clampSidePaneWidth(width: number): number {
 
 interface PersistedCsvReaderState {
   sessions: Array<{
+    sessionId?: string
     sourcePath: string
+    displayName?: string
+    displayPath?: string
+    headers?: string[]
+    images?: CsvImage[]
+    modelPaths?: string[]
+    trainingFolder?: string | null
     currentPage: number
     filterText: string
     pinned?: boolean
@@ -192,7 +201,11 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
   
   const [sessions, setSessions] = useState<CsvSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
-  const [pageSize, setPageSize] = useState(persistedState?.pageSize && PAGE_SIZES.includes(persistedState.pageSize) ? persistedState.pageSize : 1000)
+  const sessionsRef = useRef(sessions)
+  const activeSessionIdRef = useRef(activeSessionId)
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
+  useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
+  const [pageSize, setPageSize] = useState(persistedState?.pageSize && PAGE_SIZES.includes(persistedState.pageSize) ? persistedState.pageSize : 200)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState('No file loaded.')
   const [goToPage, setGoToPage] = useState('1')
@@ -217,7 +230,6 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
   const splitSeparatorRef = useRef<HTMLDivElement>(null)
   const [isResizingSplit, setIsResizingSplit] = useState(false)
   const [hasRestoredSessions, setHasRestoredSessions] = useState(false)
-  const [isRestoringSessions, setIsRestoringSessions] = useState(false)
   const restoreStartedRef = useRef(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [relatedSessionId, setRelatedSessionId] = useState<string | null>(null)
@@ -289,11 +301,17 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
       })
       const data: CsvPageResponse = await response.json()
       if (!data.success) {
+        if (data.error === 'Unknown CSV session') {
+          updateSession(sessionId, old => ({ ...old, needsOpen: true }))
+          setStatus(`Reopening ${session.displayName}...`)
+          return false
+        }
         setStatus(`Load failed: ${data.error || 'unknown error'}`)
         return false
       }
       updateSession(sessionId, old => ({
         ...old,
+        pageLoaded: true,
         headers: data.headers,
         rows: data.rows,
         currentPage: data.page,
@@ -309,7 +327,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
       setGoToPage(String(data.page + 1))
       setSelectedCell(null)
       setSelectedRowIndex(null)
-      const totalText = data.total_rows === null ? 'total indexing in progress' : `${data.total_rows.toLocaleString()} total`
+      const totalText = data.total_rows === null ? 'total not calculated' : `${data.total_rows.toLocaleString()} total`
       setStatus(`Rows ${formatNumber(data.start_row)}-${formatNumber(data.end_row)} (${totalText}; scanned ${data.scanned_rows.toLocaleString()})`)
       return true
     } catch (error) {
@@ -321,7 +339,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
     }
   }, [pageSize, sessions, updateSession])
 
-  const openCsvPath = useCallback(async (path: string, restorePage = 0, restoreFilterText = '', pinned = true): Promise<string | null> => {
+  const openCsvPath = useCallback(async (path: string, restorePage = 0, restoreFilterText = '', pinned = true, replacingId?: string): Promise<string | null> => {
     const normalizedPath = path.trim()
     if (!normalizedPath) return null
     setLoading(true)
@@ -337,8 +355,19 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
         setStatus(`Open failed: ${data.error || 'unknown error'}`)
         return null
       }
+      if (replacingId && !sessionsRef.current.some(session => session.id === replacingId)) {
+        void fetch(`${API_BASE_URL}/api/legacy/csv_reader/close`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: data.session_id }),
+        }).catch(error => console.error('Failed to close unused CSV session:', error))
+        return null
+      }
+      const targetIsActive = !replacingId || activeSessionIdRef.current === replacingId
       const newSession: CsvSession = {
         id: data.session_id,
+        needsOpen: false,
+        pageLoaded: false,
         sourcePath: normalizedPath,
         displayName: data.display_name,
         displayPath: data.display_path,
@@ -358,10 +387,12 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
         scannedRows: 0,
         matchedRows: null
       }
-      setSessions(prev => [...prev, newSession])
-      setActiveSessionId(data.session_id)
-      setSelectedImageId(current => data.images?.[0]?.id ?? current)
-      if (data.images?.length) {
+      setSessions(prev => replacingId
+        ? prev.map(session => session.id === replacingId ? newSession : session)
+        : [...prev, newSession])
+      setActiveSessionId(current => !replacingId || current === replacingId ? data.session_id : current)
+      if (targetIsActive) setSelectedImageId(current => data.images?.[0]?.id ?? current)
+      if (targetIsActive && data.images?.length) {
         setSidePaneOpen(true)
         setSideMode('image')
       }
@@ -389,39 +420,42 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
       return
     }
 
-    const restoreSessions = async () => {
-      setIsRestoringSessions(true)
-      setStatus(`Restoring ${persistedState.sessions.length} CSV session(s)...`)
-      const restored: Array<{ sourcePath: string; sessionId: string }> = []
-      try {
-        for (const saved of persistedState.sessions) {
-          const sessionId = await openCsvPath(saved.sourcePath, saved.currentPage, saved.filterText, saved.pinned ?? true)
-          if (sessionId) {
-            restored.push({ sourcePath: saved.sourcePath, sessionId })
-          }
-        }
-        const active = restored.find(item => item.sourcePath === persistedState.activeSourcePath) ?? restored[restored.length - 1]
-        const activeSaved = persistedState.sessions.find(item => item.sourcePath === active?.sourcePath)
-        if (active) {
-          setActiveSessionId(active.sessionId)
-          if (activeSaved) {
-            setGoToPage(String(Math.max(0, activeSaved.currentPage) + 1))
-          }
-        }
-        setStatus(restored.length > 0 ? `Restored ${restored.length} CSV session(s).` : 'No CSV session restored.')
-      } finally {
-        setIsRestoringSessions(false)
-        setHasRestoredSessions(true)
-      }
-    }
-
-    void restoreSessions()
-  }, [openCsvPath, persistedState])
+    const restored: CsvSession[] = persistedState.sessions.map((saved, index) => ({
+      id: saved.sessionId || `pending:${index}`,
+      needsOpen: !saved.sessionId || !saved.headers?.length,
+      pageLoaded: false,
+      sourcePath: saved.sourcePath,
+      displayName: saved.displayName || `CSV: ${saved.sourcePath.split(/[\\/]/).pop()}`,
+      displayPath: saved.displayPath || saved.sourcePath,
+      headers: saved.headers || [],
+      images: saved.images || [],
+      modelPaths: saved.modelPaths || [],
+      trainingFolder: saved.trainingFolder ?? null,
+      pinned: saved.pinned ?? true,
+      currentPage: Math.max(0, saved.currentPage || 0),
+      filterText: saved.filterText || '',
+      rows: [], startRow: 0, endRow: 0, hasPrevious: false, hasNext: false,
+      totalRows: null, scannedRows: 0, matchedRows: null,
+    }))
+    const active = restored.find(session => session.sourcePath === persistedState.activeSourcePath) ?? restored[restored.length - 1]
+    setSessions(restored)
+    setActiveSessionId(active.id)
+    setGoToPage(String(active.currentPage + 1))
+    setStatus(`Restored ${restored.length} CSV session(s).`)
+    setHasRestoredSessions(true)
+  }, [persistedState])
 
   const saveState = useCallback(() => {
     const payload: PersistedCsvReaderState = {
       sessions: sessions.map(session => ({
+        sessionId: session.needsOpen ? undefined : session.id,
         sourcePath: session.sourcePath,
+        displayName: session.displayName,
+        displayPath: session.displayPath,
+        headers: session.headers,
+        images: session.images,
+        modelPaths: session.modelPaths,
+        trainingFolder: session.trainingFolder,
         currentPage: session.currentPage,
         filterText: session.filterText,
         pinned: session.pinned
@@ -446,9 +480,9 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
 
   // Save on meaningful state transitions, NOT every render
   useEffect(() => {
-    if (!hasRestoredSessions || isRestoringSessions) return
+    if (!hasRestoredSessions) return
     saveState()
-  }, [saveState, hasRestoredSessions, isRestoringSessions])
+  }, [saveState, hasRestoredSessions])
 
   const resizeRafRef = useRef<number | null>(null)
   const resizePointerIdRef = useRef<number | null>(null)
@@ -563,11 +597,18 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
     return () => window.removeEventListener('keydown', exitOnEscape)
   }, [exitFocusMode, focusMode])
 
+  const openingSessionIds = useRef(new Set<string>())
   useEffect(() => {
-    if (activeSession && activeSession.rows.length === 0) {
-      loadPage(activeSession.id, activeSession.currentPage)
+    if (!activeSession || activeSession.pageLoaded) return
+    if (activeSession.needsOpen) {
+      if (openingSessionIds.current.has(activeSession.id)) return
+      openingSessionIds.current.add(activeSession.id)
+      void openCsvPath(activeSession.sourcePath, activeSession.currentPage, activeSession.filterText, activeSession.pinned, activeSession.id)
+        .finally(() => openingSessionIds.current.delete(activeSession.id))
+    } else {
+      void loadPage(activeSession.id, activeSession.currentPage)
     }
-  }, [activeSession, loadPage])
+  }, [activeSession, loadPage, openCsvPath])
 
   const closeSession = useCallback(async (sessionId: string) => {
     const closingIndex = sessions.findIndex(session => session.id === sessionId)
@@ -602,13 +643,13 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
 
   const applyFilter = () => {
     if (!activeSession) return
-    loadPage(activeSession.id, 0, activeSession.filterText, true)
+    loadPage(activeSession.id, 0, activeSession.filterText)
   }
 
   const clearFilter = () => {
     if (!activeSession) return
     updateSession(activeSession.id, old => ({ ...old, filterText: '' }))
-    loadPage(activeSession.id, 0, '', true)
+    loadPage(activeSession.id, 0, '')
   }
 
   const copyText = async (text: string, message: string) => {
@@ -878,7 +919,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
 
   if (!isLoaded) return null;
   return (
-    <div style={{
+    <div className="csv-reader" style={{
       padding: focusMode ? '8px' : '16px',
       fontFamily: 'system-ui, sans-serif',
       height: focusMode ? '100vh' : '100%',
@@ -913,7 +954,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
               placeholder="輸入 server 上的 .csv 或 .zip 路徑"
               style={{ flex: '1 1 520px', padding: '8px', fontFamily: 'monospace' }}
             />
-            <button onClick={openPath} disabled={loading} style={{ padding: '8px 14px' }}>Open CSV/ZIP</button>
+            <button className="csv-primary-button" onClick={openPath} disabled={loading} style={{ padding: '8px 14px' }}>Open CSV/ZIP</button>
             <label>Page Size: </label>
             <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))} disabled={loading}>
               {PAGE_SIZES.map(size => <option key={size} value={size}>{size}</option>)}
@@ -930,7 +971,7 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
               }}
               placeholder="搜尋 Transformer/output 內的資料夾或檔名"
             />
-            <button onClick={() => void searchOutputIndex()} disabled={indexBusy}>搜尋</button>
+            <button className="csv-primary-button" onClick={() => void searchOutputIndex()} disabled={indexBusy}>搜尋</button>
             <button onClick={() => void rebuildOutputIndex()} disabled={indexBusy}>重新掃描索引</button>
             <span>{indexInfo}</span>
             {outputResultsOpen && outputMatches.length > 0 && <div className="csv-output-matches" role="listbox">
@@ -976,9 +1017,9 @@ export default function CsvReaderPage({ onBack, onAddModel, onAddTrainingResults
                 style={{
                   display: 'inline-flex',
                   alignItems: 'stretch',
-                  border: isActive ? '2px solid #228be6' : '1px solid #ccc',
-                  borderRadius: '4px',
-                  backgroundColor: isActive ? '#e7f5ff' : '#fff',
+                  border: isActive ? '2px solid #2563eb' : '1px solid #e2e8f0',
+                  borderRadius: '8px',
+                  backgroundColor: isActive ? '#eff6ff' : '#fff',
                   overflow: 'hidden'
                 }}
               >

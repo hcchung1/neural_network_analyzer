@@ -79,9 +79,22 @@ validate_port "FRONTEND_PORT" "$FRONTEND_PORT"
 ensure_port_available "Python Sidecar" "$BACKEND_HOST" "$BACKEND_PORT"
 ensure_port_available "Next.js" "$FRONTEND_HOST" "$FRONTEND_PORT"
 
+FRONTEND_SCHEME=http
+NEXT_ARGS=(--hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT")
+HTTPS_CERT="$PROJECT_DIR/.certificates/server.pem"
+HTTPS_KEY="$PROJECT_DIR/.certificates/server-key.pem"
+if [[ -e "$HTTPS_CERT" || -e "$HTTPS_KEY" ]]; then
+  if [[ ! -r "$HTTPS_CERT" || ! -s "$HTTPS_CERT" || ! -r "$HTTPS_KEY" || ! -s "$HTTPS_KEY" ]]; then
+    echo "❌ HTTPS requires both readable, non-empty .certificates/server.pem and .certificates/server-key.pem." >&2
+    exit 2
+  fi
+  FRONTEND_SCHEME=https
+  NEXT_ARGS+=(--experimental-https --experimental-https-cert "$HTTPS_CERT" --experimental-https-key "$HTTPS_KEY")
+fi
+
 echo "🚀 Starting ArchAnalyzer Next.js + Python Sidecar Stack..."
 echo "📡 Sidecar: http://$BACKEND_HOST:$BACKEND_PORT"
-echo "🎨 Next.js: http://$FRONTEND_HOST:$FRONTEND_PORT"
+echo "🎨 Next.js: $FRONTEND_SCHEME://$FRONTEND_HOST:$FRONTEND_PORT"
 
 # echo "📦 Verifying Python Sidecar..."
 # (
@@ -122,9 +135,9 @@ echo "🎨 Starting Next.js App Router Server..."
 cd "$PROJECT_DIR"
 
 if [ -x "./node_modules/.bin/next" ]; then
-  ./node_modules/.bin/next dev --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT" &
+  ./node_modules/.bin/next dev "${NEXT_ARGS[@]}" &
 else
-  npm run dev -- --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT" &
+  npm run dev -- "${NEXT_ARGS[@]}" &
 fi
 NEXT_PID=$!
 

@@ -1,3 +1,30 @@
+export async function copyImageToClipboard(imageUrl: string): Promise<void> {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('此瀏覽器或連線不支援圖片複製，請使用 HTTPS 或 localhost 開啟頁面。')
+  }
+  const image = fetch(imageUrl, { cache: 'no-store' }).then(async response => {
+    if (!response.ok) {
+      const details = await response.json().catch(() => null)
+      throw new Error(details?.error || '無法讀取圖片')
+    }
+    const blob = await response.blob()
+    if (blob.type !== 'image/png') throw new Error('圖片不是 PNG 格式')
+    return blob
+  })
+  // Start the clipboard write during the click gesture, before the fetch resolves.
+  // Safari requires this even though the ClipboardItem may contain a promise.
+  void image.catch(() => {})
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })])
+  } catch (error) {
+    // Retain the file error when writing fails because its image promise rejected.
+    await image
+    throw new Error(error instanceof DOMException && error.name === 'NotAllowedError'
+      ? '瀏覽器拒絕圖片複製，請允許剪貼簿權限後再試一次。'
+      : '圖片複製失敗，請再試一次。')
+  }
+}
+
 export async function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {

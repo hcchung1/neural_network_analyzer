@@ -173,27 +173,7 @@ def inspect_checkpoint(checkpoint_blob: Any, requested_phase: Optional[str] = No
 
 def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec: Optional[Dict[str, Any]] = None) -> Tuple[ModelBuildSpec, Optional[nn.Module]]:
     """Infer ModelBuildSpec or construct exact model matching state_dict shapes."""
-    if manifest_spec and isinstance(manifest_spec, dict):
-        name = manifest_spec.get("name", "transOriginal")
-        input_shape = tuple(manifest_spec.get("input_shape", [25, 12308]))
-        num_classes = int(manifest_spec.get("num_classes", 2))
-        normalization = manifest_spec.get("normalization")
-        old_ablation = manifest_spec.get("old_single_encoder_ablation")
-        use_cls = manifest_spec.get("use_cls_token")
-        f_act_add = manifest_spec.get("f_act_add_dim")
-        linear_head = manifest_spec.get("simple_linear_head")
-        spec = ModelBuildSpec(
-            name=name,
-            input_shape=input_shape,
-            num_classes=num_classes,
-            normalization=normalization,
-            old_single_encoder_ablation=old_ablation,
-            use_cls_token=use_cls,
-            f_act_add_dim=f_act_add,
-            simple_linear_head=linear_head,
-        )
-        return spec, None
-
+    selected = manifest_spec or {}
     keys = set(state_dict.keys())
 
     num_classes = 2
@@ -213,15 +193,15 @@ def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec
                 name = "resnet14"
         else:
             name = "resnet10"
-        return ModelBuildSpec(name=name, input_shape=(362, 34), num_classes=num_classes, normalization="gn"), None
+        return ModelBuildSpec(name=selected.get("name") or name, input_shape=(362, 34), num_classes=num_classes, normalization="gn"), None
 
     # CNN family
     if "conv1.weight" in keys and "conv4.weight" in keys:
-        return ModelBuildSpec(name="cnn", input_shape=(362, 34), num_classes=num_classes, normalization="bn"), None
+        return ModelBuildSpec(name=selected.get("name") or "cnn", input_shape=(362, 34), num_classes=num_classes, normalization="bn"), None
 
     # VOG family
     if "prior_encoder.proj_init.weight" in keys or "prior_z_proj.weight" in keys:
-        return ModelBuildSpec(name="transVOG", input_shape=(25, 12308), num_classes=num_classes, normalization="ln"), None
+        return ModelBuildSpec(name=selected.get("name") or "transVOG", input_shape=(25, 12308), num_classes=num_classes, normalization="ln"), None
 
     # Check for direct custom MahjongTransformer instantiation when shapes differ from standard factory presets
     seq_len = 25
@@ -235,18 +215,15 @@ def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec
     n_layers = max(layer_indices) + 1 if layer_indices else 6
 
     # Infer d_ff from feed_forward layer 0
-    for ff_key in ("transformer_layers.0.feed_forward.0.weight", "transformer_layers.0.ff1.0.weight"):
+    for ff_key in ("transformer_layers.0.feed_forward.0.weight", "transformer_layers.0.feed_forward_at.0.weight", "transformer_layers.0.ff1.0.weight"):
         if ff_key in state_dict:
             d_ff = int(state_dict[ff_key].shape[0])
             break
 
-    # Infer n_heads from attention w_q shape
+    # Head count is not encoded in w_q; use the factory presets when available.
     n_heads = 8
-    if "transformer_layers.0.attention.w_q.weight" in state_dict:
-        for candidate in (16, 12, 8, 4, 3, 2, 1):
-            if d_model % candidate == 0:
-                n_heads = candidate
-                break
+    if d_model in (128, 256, 384, 512, 768, 1024):
+        n_heads = {128: 4, 256: 4, 384: 12, 512: 8, 768: 12, 1024: 16}[d_model]
 
     # Check input projection structure (input_projection vs proj_init/proj_act)
     feature_dim = 12308
@@ -263,12 +240,14 @@ def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec
         elif n_layers <= 4: name = "conformerSmall"
         elif n_layers <= 6: name = "conformerOriginal"
         else: name = "conformerLarge"
-        spec = ModelBuildSpec(name=name, input_shape=(seq_len, feature_dim), num_classes=num_classes, normalization="ln")
+        spec = ModelBuildSpec(name=selected.get("name") or name, input_shape=(seq_len, feature_dim), num_classes=num_classes, normalization="ln")
         return spec, None
 
     # Standard Transformer names
     if n_layers <= 2 and d_model <= 128:
         name = "transTest"
+    elif d_model == 384 and n_layers == 6:
+        name = "trans"
     elif n_layers >= 24 or d_model >= 1024:
         name = "transBertLarge"
     elif n_layers >= 12 or d_model >= 768:
@@ -276,7 +255,25 @@ def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec
     else:
         name = "transOriginal"
 
-    spec = ModelBuildSpec(name=name, input_shape=(seq_len, feature_dim), num_classes=num_classes, normalization="ln")
+    name = selected.get("name") or name
+    head_mode = "split_keep" if "transformer_layers.0.feed_forward_at.0.weight" in keys else None
+    merge_mode = "concat" if "branch_merge_proj.0.weight" in keys else ("add" if head_mode else None)
+    f_act_add_dim = int(state_dict["proj_act.weight"].shape[1]) if "proj_act.weight" in keys else None
+    use_cls_token = "cls_token" in keys
+    simple_linear_head = "flinear" if "tenpai_classifier.weight" in keys and state_dict["tenpai_classifier.weight"].shape[1] == seq_len * d_model else None
+
+    spec = ModelBuildSpec(
+        name=name,
+        input_shape=tuple(selected.get("input_shape", (seq_len, feature_dim))),
+        num_classes=int(selected.get("num_classes", num_classes)),
+        normalization=selected.get("normalization", "ln"),
+        old_single_encoder_ablation=selected.get("old_single_encoder_ablation"),
+        use_cls_token=selected.get("use_cls_token", use_cls_token),
+        f_act_add_dim=selected.get("f_act_add_dim", f_act_add_dim),
+        simple_linear_head=selected.get("simple_linear_head", simple_linear_head),
+        head_mode=selected.get("head_mode", head_mode),
+        split_keep_merge_mode=selected.get("split_keep_merge_mode", merge_mode),
+    )
 
     # If parameters deviate from standard factory preset, build custom MahjongTransformer instance directly
     expected_default_d_ff = 512 if name == "transTest" else (3072 if name == "transBertBase" else (4096 if name == "transBertLarge" else 2048))
@@ -287,15 +284,17 @@ def infer_model_name_and_spec(state_dict: Dict[str, torch.Tensor], manifest_spec
             if len(w_shape) == 2 and w_shape[1] == seq_len * d_model:
                 flinear_in_shape = w_shape[1]
 
-        custom_model = sequence.MahjongTransformer(
-            input_shape=(seq_len, feature_dim),
-            d_model=d_model,
-            n_heads=n_heads,
-            n_layers=n_layers,
-            d_ff=d_ff,
-            num_classes=num_classes,
-            norm="ln"
-        )
+        from models.factory import _temporary_architecture_overrides
+        with _temporary_architecture_overrides(spec):
+            custom_model = sequence.MahjongTransformer(
+                input_shape=(seq_len, feature_dim),
+                d_model=d_model,
+                n_heads=n_heads,
+                n_layers=n_layers,
+                d_ff=d_ff,
+                num_classes=num_classes,
+                norm=spec.normalization,
+            )
         if "input_projection.weight" in state_dict:
             custom_model.input_projection = nn.Linear(feature_dim, d_model, bias=False)
             custom_model.use_heter_tokens = False
@@ -339,6 +338,8 @@ def load_checkpoint_strictly(
 
     blob = torch.load(path, map_location="cpu")
     state_dict, loaded_phase = inspect_checkpoint(blob, requested_phase)
+    if state_dict and all(key.startswith("module.") for key in state_dict):
+        state_dict = {key.removeprefix("module."): value for key, value in state_dict.items()}
 
     spec, custom_model = infer_model_name_and_spec(state_dict, manifest_spec)
     model = custom_model if custom_model is not None else build_model(spec)

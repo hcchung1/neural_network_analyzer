@@ -8,18 +8,22 @@ from __future__ import annotations
 import csv
 import os
 import sqlite3
+import shutil
 import tempfile
 import threading
 import time
 import uuid
 import zipfile
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+import anyio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 
@@ -38,14 +42,91 @@ class CsvSession:
     image_paths: list[str] = field(default_factory=list)
     model_paths: list[str] = field(default_factory=list)
     training_folder: Optional[str] = None
+    cache_key: Optional[tuple[str, int, int]] = None
+    touched: float = field(default_factory=time.monotonic)
+    leases: int = 0
+    closing: bool = False
 
 
 _SESSIONS: dict[str, CsvSession] = {}
+_SESSION_LOCK = threading.RLock()
+_OPENING = 0
+_SESSION_TTL = float(os.getenv("ANALYZER_CSV_TTL_SECONDS", "1800"))
+_MAX_SESSIONS = int(os.getenv("ANALYZER_MAX_CSV_SESSIONS", "32"))
+if _SESSION_TTL <= 0 or _MAX_SESSIONS <= 0:
+    raise ValueError("CSV session limits must be positive")
+
+
+def _dispose_csv(session: CsvSession):
+    if session.extracted_root:
+        shutil.rmtree(session.extracted_root, ignore_errors=True)
+
+
+def cleanup_csv_sessions():
+    expired = []
+    with _SESSION_LOCK:
+        now = time.monotonic()
+        for sid, session in list(_SESSIONS.items()):
+            if not session.leases and (session.closing or now - session.touched >= _SESSION_TTL):
+                expired.append(_SESSIONS.pop(sid))
+    for session in expired:
+        _dispose_csv(session)
+
+
+def _acquire_session(session_id: str) -> Optional[CsvSession]:
+    cleanup_csv_sessions()
+    with _SESSION_LOCK:
+        session = _SESSIONS.get(session_id)
+        if session is None or session.closing:
+            return None
+        session.leases += 1
+        return session
+
+
+def _release_session(session_id: str, session: CsvSession):
+    dispose = False
+    with _SESSION_LOCK:
+        session.leases -= 1
+        session.touched = time.monotonic()
+        if session.closing and not session.leases and _SESSIONS.get(session_id) is session:
+            del _SESSIONS[session_id]
+            dispose = True
+    if dispose:
+        _dispose_csv(session)
+
+
+@contextmanager
+def _session_lease(session_id: str):
+    session = _acquire_session(session_id)
+    try:
+        yield session
+    finally:
+        if session is not None:
+            _release_session(session_id, session)
+
+
+class CsvImageResponse(FileResponse):
+    """Keep extracted files alive until streaming completes or fails."""
+    def __init__(self, path: str, session_id: str, session: CsvSession):
+        super().__init__(path, media_type="image/png")
+        self.session_id = session_id
+        self.session = session
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Finish the lease even if the client disconnects; filesystem cleanup
+            # must not run on the ASGI event loop.
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(_release_session, self.session_id, self.session)
+
 _SESSION_TEMP_ROOT = Path(tempfile.gettempdir()) / "archanalyzer_csv_reader"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _OUTPUT_ROOT = (_REPO_ROOT / "Mahjong-Hidden-Information-Forecast" / "Transformer" / "output").resolve()
 _INDEX_PATH = Path(__file__).resolve().parents[1] / "data" / "csv_reader_index.sqlite3"
 _INDEX_SCAN_LOCK = threading.Lock()
+_CSV_CHECKPOINT_INTERVAL = 1000
 
 
 class OpenCsvRequest(BaseModel):
@@ -54,6 +135,7 @@ class OpenCsvRequest(BaseModel):
 
 class OpenCsvResponse(BaseModel):
     success: bool
+    error_code: Optional[str] = None
     session_id: str = ""
     display_name: str = ""
     display_path: str = ""
@@ -163,31 +245,36 @@ def _build_unique_column_names(headers: list[str]) -> list[str]:
     return result
 
 
-def _extract_zip_session(zip_path: str) -> tuple[str, list[str], list[str], str, str]:
+def _extract_zip_session(zip_path: str) -> tuple[str, list[str], list[str], str, str, str]:
     _SESSION_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     session_root = _SESSION_TEMP_ROOT / f"{uuid.uuid4().hex}"
     session_root.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(zip_path) as zf:
-        entries = [e for e in zf.infolist() if not e.is_dir()]
-        csv_entries = [e for e in entries if Path(e.filename).suffix.lower() == ".csv"]
-        if not csv_entries:
-            raise ValueError("No CSV file found in zip")
-        csv_entries.sort(key=lambda e: (("pred" not in Path(e.filename).name.lower()), -e.file_size, e.filename.lower()))
-        csv_entry = csv_entries[0]
-        csv_path = _safe_extract_member(zf, csv_entry, session_root / "csv")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            entries = [e for e in zf.infolist() if not e.is_dir()]
+            csv_entries = [e for e in entries if Path(e.filename).suffix.lower() == ".csv"]
+            if not csv_entries:
+                raise ValueError("No CSV file found in zip")
+            csv_entries.sort(key=lambda e: (("pred" not in Path(e.filename).name.lower()), -e.file_size, e.filename.lower()))
+            csv_entry = csv_entries[0]
+            csv_path = _safe_extract_member(zf, csv_entry, session_root / "csv")
 
-        image_paths: list[str] = []
-        for entry in sorted([e for e in entries if Path(e.filename).suffix.lower() == ".png"], key=lambda e: e.filename.lower()):
-            image_paths.append(_safe_extract_member(zf, entry, session_root / "images"))
-        model_paths = [
-            _safe_extract_member(zf, entry, session_root / "models")
-            for entry in sorted(entries, key=lambda e: e.filename.lower())
-            if Path(entry.filename).suffix.lower() in {".pth", ".pt"}
-        ]
+            image_paths: list[str] = []
+            for entry in sorted([e for e in entries if Path(e.filename).suffix.lower() == ".png"], key=lambda e: e.filename.lower()):
+                image_paths.append(_safe_extract_member(zf, entry, session_root / "images"))
+            model_paths = [
+                _safe_extract_member(zf, entry, session_root / "models")
+                for entry in sorted(entries, key=lambda e: e.filename.lower())
+                if Path(entry.filename).suffix.lower() in {".pth", ".pt"}
+            ]
 
-    display_path = f"{zip_path} | CSV: {csv_entry.filename}"
-    return csv_path, image_paths, model_paths, str(session_root), display_path
+        display_path = f"{zip_path} | CSV: {csv_entry.filename}"
+        member_identity = f"{csv_entry.filename}:{csv_entry.CRC}:{csv_entry.file_size}"
+        return csv_path, image_paths, model_paths, str(session_root), display_path, member_identity
+    except Exception:
+        shutil.rmtree(session_root, ignore_errors=True)
+        raise
 
 
 def _has_training_results(folder: Path) -> bool:
@@ -215,6 +302,12 @@ def _connect_index() -> sqlite3.Connection:
     )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS csv_page_offsets ("
+        "path TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, "
+        "row_number INTEGER NOT NULL, offset INTEGER NOT NULL, "
+        "PRIMARY KEY (path, size, mtime_ns, row_number))"
     )
     return connection
 
@@ -393,6 +486,15 @@ def _image_payload(session_id: str, session: CsvSession) -> list[dict[str, str]]
 
 @router.post("/open", response_model=OpenCsvResponse)
 def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
+    global _OPENING
+    cleanup_csv_sessions()
+    with _SESSION_LOCK:
+        if len(_SESSIONS) + _OPENING >= _MAX_SESSIONS:
+            return OpenCsvResponse(success=False, error_code="CSV_CAPACITY",
+                                   error="CSV session 數量已達上限，請關閉未使用的檔案後重試。")
+        _OPENING += 1
+    extracted_root = None
+    published = False
     try:
         path = _safe_abs_path(request.path)
         if not os.path.isfile(path):
@@ -401,10 +503,13 @@ def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
         extracted_root = None
         image_paths: list[str] = []
         model_paths: list[str] = []
+        cache_key = None
         display_path = path
         csv_path = path
         if ext == ".zip":
-            csv_path, image_paths, model_paths, extracted_root, display_path = _extract_zip_session(path)
+            csv_path, image_paths, model_paths, extracted_root, display_path, member_identity = _extract_zip_session(path)
+            source_stat = os.stat(path)
+            cache_key = (f"zip:{path}:{member_identity}", source_stat.st_size, source_stat.st_mtime_ns)
         elif ext != ".csv":
             return OpenCsvResponse(success=False, error="Only .csv and .zip are supported")
 
@@ -424,8 +529,11 @@ def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
             image_paths=image_paths,
             model_paths=model_paths,
             training_folder=training_folder,
+            cache_key=cache_key,
         )
-        _SESSIONS[session_id] = session
+        with _SESSION_LOCK:
+            _SESSIONS[session_id] = session
+            published = True
         return OpenCsvResponse(
             success=True,
             session_id=session_id,
@@ -438,13 +546,22 @@ def open_csv(request: OpenCsvRequest) -> OpenCsvResponse:
         )
     except Exception as exc:
         return OpenCsvResponse(success=False, error=str(exc))
+    finally:
+        if extracted_root and not published:
+            shutil.rmtree(extracted_root, ignore_errors=True)
+        with _SESSION_LOCK:
+            _OPENING -= 1
 
 
 @router.post("/page", response_model=CsvPageResponse)
 def get_page(request: CsvPageRequest) -> CsvPageResponse:
-    session = _SESSIONS.get(request.session_id)
-    if session is None:
-        return CsvPageResponse(success=False, error="Unknown CSV session")
+    with _session_lease(request.session_id) as session:
+        if session is None:
+            return CsvPageResponse(success=False, error="Unknown CSV session")
+        return _get_page(request, session)
+
+
+def _get_page(request: CsvPageRequest, session: CsvSession) -> CsvPageResponse:
 
     page_size = max(1, min(int(request.page_size), 5000))
     page = max(0, int(request.page))
@@ -458,10 +575,48 @@ def get_page(request: CsvPageRequest) -> CsvPageResponse:
 
     try:
         conditions = _parse_filter(request.filter_text, session.headers)
+        if session.cache_key is None:
+            file_stat = os.stat(session.csv_path)
+            file_key = (session.csv_path, file_stat.st_size, file_stat.st_mtime_ns)
+        else:
+            file_key = session.cache_key
+        checkpoint_row = 0
+        checkpoint_offset: Optional[int] = None
+        if not conditions and start_match:
+            try:
+                with closing(_connect_index()) as connection:
+                    checkpoint = connection.execute(
+                        "SELECT row_number, offset FROM csv_page_offsets "
+                        "WHERE path = ? AND size = ? AND mtime_ns = ? AND row_number <= ? "
+                        "ORDER BY row_number DESC LIMIT 1",
+                        (*file_key, start_match),
+                    ).fetchone()
+                    if checkpoint:
+                        checkpoint_row, checkpoint_offset = checkpoint
+            except (OSError, sqlite3.Error):
+                pass
+
+        new_checkpoints: list[tuple[str, int, int, int, int]] = []
+        physical_row = checkpoint_row
+        matched = checkpoint_row
         with open(session.csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            next(reader, None)  # header
-            for row in reader:
+            if checkpoint_offset is None:
+                reader = csv.reader(iter(f.readline, ""))
+                next(reader, None)  # header
+            else:
+                f.seek(checkpoint_offset)
+                reader = csv.reader(iter(f.readline, ""))
+            while True:
+                checkpoint_due = physical_row % _CSV_CHECKPOINT_INTERVAL == 0
+                row_offset = f.tell() if checkpoint_due else None
+                try:
+                    row = next(reader)
+                except StopIteration:
+                    total_rows = matched
+                    break
+                if checkpoint_due and row_offset is not None:
+                    new_checkpoints.append((*file_key, physical_row, row_offset))
+                physical_row += 1
                 scanned += 1
                 if conditions and not _matches(row, conditions):
                     continue
@@ -472,8 +627,18 @@ def get_page(request: CsvPageRequest) -> CsvPageResponse:
                 if start_match <= matched < end_match_exclusive:
                     rows.append(row)
                 matched += 1
-            else:
-                total_rows = matched
+
+        if new_checkpoints:
+            try:
+                with closing(_connect_index()) as connection:
+                    with connection:
+                        connection.executemany(
+                            "INSERT OR IGNORE INTO csv_page_offsets "
+                            "(path, size, mtime_ns, row_number, offset) VALUES (?, ?, ?, ?, ?)",
+                            new_checkpoints,
+                        )
+            except (OSError, sqlite3.Error):
+                pass
 
         if request.include_total:
             total_rows = matched
@@ -501,9 +666,13 @@ def get_page(request: CsvPageRequest) -> CsvPageResponse:
 
 @router.post("/neighbors", response_model=CsvNeighborsResponse)
 def get_neighbors(request: CsvNeighborsRequest) -> CsvNeighborsResponse:
-    session = _SESSIONS.get(request.session_id)
-    if not session:
-        return CsvNeighborsResponse(success=False, error="Unknown CSV session")
+    with _session_lease(request.session_id) as session:
+        if session is None:
+            return CsvNeighborsResponse(success=False, error="Unknown CSV session")
+        return _get_neighbors(request, session)
+
+
+def _get_neighbors(request: CsvNeighborsRequest, session: CsvSession) -> CsvNeighborsResponse:
 
     header_lookup = {
         header.strip().lower(): index for index, header in enumerate(session.headers)
@@ -571,19 +740,29 @@ def get_neighbors(request: CsvNeighborsRequest) -> CsvNeighborsResponse:
 
 @router.get("/image/{session_id}/{image_index}")
 async def get_image(session_id: str, image_index: int) -> FileResponse:
-    session = _SESSIONS.get(session_id)
-    if session is None or image_index < 0 or image_index >= len(session.image_paths):
+    # TTL cleanup can remove large ZIP directories; run it off the event loop.
+    session = await run_in_threadpool(_acquire_session, session_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(session.image_paths[image_index], media_type="image/png")
+    try:
+        if image_index < 0 or image_index >= len(session.image_paths):
+            raise HTTPException(status_code=404, detail="Image not found")
+        return CsvImageResponse(session.image_paths[image_index], session_id, session)
+    except Exception:
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(_release_session, session_id, session)
+        raise
 
 
 @router.post("/close")
 def close_session(request: CloseSessionRequest) -> dict[str, Any]:
-    session = _SESSIONS.pop(request.session_id, None)
-    if session and session.extracted_root:
-        try:
-            import shutil
-            shutil.rmtree(session.extracted_root, ignore_errors=True)
-        except Exception:
-            pass
+    dispose = None
+    with _SESSION_LOCK:
+        session = _SESSIONS.get(request.session_id)
+        if session is not None:
+            session.closing = True
+            if not session.leases:
+                dispose = _SESSIONS.pop(request.session_id)
+    if dispose is not None:
+        _dispose_csv(dispose)
     return {"success": True}

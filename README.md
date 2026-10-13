@@ -28,10 +28,10 @@ ssh -L 3001:localhost:3001 user@remote-server
 ## 功能特色
 
 - 🔬 **單一 Token 視覺化**: 深入檢視 Transformer 中單一 token 的資訊流
-- 📊 **多維度分析**: Input Features、Embedding、Attention、Output
+- 📊 **模型分析**: Attention、完整原始輸出與輸出 shape；Embedding 依分析服務 capability 顯示支援狀態
 - 🔄 **多人協作**: 分享工作區、獨立瀏覽／跟隨主持人、共同聊天與標註
 - 🎨 **層級探索**: 透過 Slider 切換不同 Transformer 層級
-- 📈 **機率分布**: 視覺化最終輸出的機率分布
+- 📈 **完整輸出**: 保留全部數值，不依維度猜測 logits、機率或類別名稱
 
 ## 技術架構
 
@@ -69,11 +69,57 @@ Next.js 使用 `PYTHON_SIDECAR_URL` 連線後端（預設 `http://127.0.0.1:8080
   revision 未更新時只傳心跳，presence 每 3 秒最多寫入一次，失敗會退避重試。
 - 主持人操作由伺服器驗證。加入憑證以雜湊保存；只有房間 ID 無法直接讀取狀態，
   但持有分享連結的人可以自行加入。這是內部研究工具的連結邀請模式，沒有帳號登入。
-- 協作推論使用獨立模型與 hooks，不改寫單人模式的全域模型。
-  個人、協作、比較與 Torchlens 共用 FIFO 計算准入；協作模型使用有界常駐快取。
+- 個人分頁與協作推論使用各自獨立的模型與 hooks。
+  個人、協作、比較、Torchlens 共用計算准入，同時執行一個重型工作。
+  協作模型使用有界常駐快取，減少重複載入。
   無 checkpoint 的 dummy 模型在同一快取租約期間重用；到期後重新建立，不作為可重現的實驗依據。
 - 本版以單機、持久磁碟部署為範圍。多台主機需改用共享資料庫及推論佇列。
   網際網路部署前需另加登入與檔案存取政策；目前原有檔案 API 面向可信任的研究環境。
+
+### 個人模式與生命週期
+
+個人模型載入後回傳隨機 `model_handle`，只保留在目前分頁記憶體。
+後續推論、分析結果讀取／刪除及 Torchlens 使用 `X-Model-Handle`；缺失或到期會要求重新載入。
+新模型成功載入才替換舊模型並清除圖表；失敗保留舊模型。
+按 **Release Model** 可主動釋放。離開頁面或加入協作時嘗試釋放；網路中斷由 TTL 回收。
+重新整理個人頁面需重新載入模型，分享需主動加入共同工作區。
+
+部署必須使用 **單一 Python process／單一 Uvicorn worker**，不能加 `--workers 2` 或多副本負載平衡。
+模型 handle、CSV session 與計算鎖皆保存在該 process；重啟後失效。
+區網使用 `http://<伺服器區網IP>:3001`；`0.0.0.0` 是監聽位址。
+
+以下環境變數在啟動 Python 前設定，修改後需重啟：
+
+| 變數 | 預設 | 意義 |
+| --- | --- | --- |
+| `ANALYZER_MODEL_TTL_SECONDS` | 1800 | 個人模型閒置期限（秒） |
+| `ANALYZER_MAX_MODELS` | 4 | 個人常駐模型上限 |
+| `ANALYZER_MODEL_MEMORY_MB` | 2048 | 保留模型的參數／buffer 預算（MiB） |
+| `ANALYZER_MAX_WAITING_JOBS` | 4 | 一個執行中工作之外的等待名額 |
+| `ANALYZER_COMPUTE_WAIT_SECONDS` | 120 | 等待計算名額逾時（秒） |
+| `ANALYZER_RESULT_TTL_SECONDS` | 3600 | 分析結果閒置期限（秒） |
+| `ANALYZER_MAX_RESULTS` | 100 | 保留分析結果上限 |
+| `ANALYZER_RESULT_MEMORY_MB` | 256 | 序列化分析結果預算（MiB） |
+| `ANALYZER_CSV_TTL_SECONDS` | 1800 | CSV session 閒置期限（秒） |
+| `ANALYZER_MAX_CSV_SESSIONS` | 32 | CSV session 上限，包含正在開啟／尚有讀取的關閉中 session |
+
+模型／結果額滿會回傳 503 `MODEL_CAPACITY`／`RESULT_CAPACITY`；計算額滿或等待逾時為
+503 `COMPUTE_BUSY`，附 `Retry-After`。不會為了新請求靜默驅逐其他人的有效模型或結果。
+CSV 容量錯誤沿用 reader 的 `{success:false,error,error_code:"CSV_CAPACITY"}` 格式。
+CSV 到期後顯示重新載入提示；關閉 session 後拒絕新讀取，進行中的讀取／圖片串流完成才刪除解壓目錄。
+每 60 秒執行清理，資源存取時也會檢查期限；執行中租約不會被 TTL 清除。
+
+參數／buffer 預算不等於推論尖峰 RAM／VRAM 上限；載入新舊模型並存、attention、Torchlens
+與比較的暫存仍需額外空間。預設值不是 GPU 壓力驗收結果，應依部署機器調整。
+
+目前個人與協作輸出都是 `raw`：`output_sample`（歷史欄位名稱）包含完整 tensor 的
+row-major 展平值，`output_shape` 保留原始維度；不截成前五類，也不自動轉機率。
+目前分析 API 未提供 Embedding probe，畫面會明確說明，不把架構具備 embedding 當成已捕捉資料。
+AI Assistant 使用 `page_context`／`reply` 契約，模型上下文切換會清除舊對話並忽略遲到回覆。
+實際 AI 回覆仍需後端既有語言模型供應商設定；自動測試替換外部供應商，不呼叫付費服務。
+
+更新程式碼後，請在原本執行 `start.sh` 的終端機以 Ctrl+C 停止，再執行 `bash start.sh`。
+Next.js 開發模式的熱更新不會重載 Python；前後端必須同時更新。
 
 ## 驗證
 
@@ -81,9 +127,12 @@ Next.js 使用 `PYTHON_SIDECAR_URL` 連線後端（預設 `http://127.0.0.1:8080
 
 ```bash
 npx playwright install chromium
-npm run test:collaboration
+npx playwright test
 npx tsc --noEmit
-PYTHONPATH=backend:. python -m unittest backend.test_collaboration backend.test_csv_reader_neighbors backend.test_compatibility
+PYTHONPATH=backend:. python -m unittest discover -s backend -p 'test_*.py'
+node --test tests/sidecar-client.test.cjs
+bash tests/test_startup.sh
+npm run build
 ```
 
 `PLAYWRIGHT_BASE_URL` 可指定另一個網頁位置。Playwright 使用兩個獨立瀏覽器 context，

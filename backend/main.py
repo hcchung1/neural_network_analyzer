@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.sidecar import sidecar_router, cleanup_resources
 from api.visualize_chat import router as visualize_chat_router
 from api.binary_samples import router as binary_samples_router
-from api.csv_reader import router as csv_reader_router
+from api.csv_reader import router as csv_reader_router, cleanup_csv_sessions
 from api.training import router as training_router
 from api.compare import router as compare_router
 from api.collaboration import router as collaboration_router
@@ -25,6 +25,7 @@ async def lifespan(app):
             await asyncio.sleep(60)
             await asyncio.to_thread(cleanup_resources)
             await asyncio.to_thread(shared_model_cache.cleanup_expired)
+            await asyncio.to_thread(cleanup_csv_sessions)
     task = asyncio.create_task(cleanup_loop())
     try:
         yield

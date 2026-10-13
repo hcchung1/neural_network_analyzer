@@ -15,7 +15,7 @@ export function Sidebar({ activeTab }: { activeTab: string }) {
   ];
 
   return (
-    <aside className={`${isExpanded ? "w-64" : "w-16"} transition-all duration-300 ease-in-out bg-slate-900 text-slate-200 border-r border-slate-800 flex flex-col h-screen select-none`}>
+    <aside className={`workbench-sidebar ${isExpanded ? "w-64" : "w-16"} transition-all duration-300 ease-in-out bg-slate-900 text-slate-200 border-r border-slate-800 flex flex-col h-screen select-none`}>
       <div className={`p-4 border-b border-slate-800 flex items-center ${isExpanded ? "space-x-3" : "justify-center"}`}>
         <Activity className="w-6 h-6 text-blue-500 shrink-0" />
         {isExpanded && (
